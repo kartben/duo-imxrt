@@ -1,0 +1,17 @@
+identifier: duo_brains2
+name: Dato DUO Brains 2
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+  - gnuarmemb
+ram: 64
+flash: 16384
+supported:
+  - adc
+  - dma
+  - gpio
+  - i2s
+  - pwm
+  - usb_device
+vendor: dato

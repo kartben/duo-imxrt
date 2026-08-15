@@ -1,0 +1,13 @@
+# Copyright (c) 2025 Dato Musical Instruments
+# SPDX-License-Identifier: Apache-2.0
+
+CONFIG_GPIO=y
+CONFIG_ARM_MPU=y
+CONFIG_HW_STACK_PROTECTION=y
+
+# The DUO has no debug UART broken out; LPUART1 is wired to the MIDI DIN
+# jacks and is driven at 31250 baud by the application. Leaving the console
+# on it would corrupt the MIDI stream, so there is no console by default.
+CONFIG_CONSOLE=n
+CONFIG_UART_CONSOLE=n
+CONFIG_SERIAL=y

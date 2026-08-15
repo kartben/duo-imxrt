@@ -1,0 +1,34 @@
+# West manifest for the Zephyr port of the Dato DUO "Brains 2" firmware.
+#
+# This makes the repository a Zephyr "T2" workspace application:
+#
+#   west init -m https://github.com/datomusic/duo-imxrt --mr main duo-ws
+#   cd duo-ws && west update
+#   west build -b duo_brains2 duo-imxrt/zephyr/app
+#
+# The legacy MCUXpresso-SDK firmware under brains2/ is unaffected by this file.
+manifest:
+  version: "0.13"
+
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+
+  defaults:
+    remote: zephyrproject-rtos
+
+  projects:
+    - name: zephyr
+      revision: v4.4.2
+      import:
+        # Only the modules the DUO firmware actually needs. Keeping this list
+        # short keeps `west update` (and therefore CI) fast.
+        name-allowlist:
+          - cmsis
+          - cmsis_6
+          - hal_nxp
+          - segger
+          - picolibc
+
+  self:
+    path: duo-imxrt
