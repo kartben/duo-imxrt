@@ -1,0 +1,9 @@
+common:
+  tags:
+    - duo
+    - midi
+tests:
+  duo.midi:
+    # Pure logic with no hardware dependency, so it runs on the host.
+    integration_platforms:
+      - native_sim/native/64
