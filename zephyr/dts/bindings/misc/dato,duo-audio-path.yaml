@@ -1,0 +1,26 @@
+# Copyright (c) 2025 Dato Musical Instruments
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Output stage of the Dato DUO audio path: the built-in speaker amplifier and
+  the headphone driver, each with its own enable line. Exactly one of the two
+  is active at a time, selected by the headphone-jack detect channel on the
+  "brn" multiplexer.
+
+compatible: "dato,duo-audio-path"
+
+include: base.yaml
+
+properties:
+  headphone-enable-gpios:
+    type: phandle-array
+    required: true
+    description: Drives the headphone amplifier enable pin.
+
+  amp-mute-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      Drives the speaker amplifier shutdown pin. Asserting this signal mutes
+      the speaker; the line is released to a high-impedance input while muted
+      so the amplifier's own pull-up holds it.
