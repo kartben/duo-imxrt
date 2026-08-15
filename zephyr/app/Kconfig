@@ -1,0 +1,73 @@
+# Copyright (c) 2025 Dato Musical Instruments
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "Dato DUO firmware"
+
+config DUO_DEV_MODE
+	bool "Developer mode"
+	help
+	  Replaces power-off on a long press of the play button with entry into
+	  the serial downloader, so the firmware can be reflashed without
+	  opening the enclosure. Equivalent to DEV_MODE in the legacy firmware.
+
+config DUO_AUDIO_BLOCK_FRAMES
+	int "Audio block size in stereo frames"
+	default 128
+	help
+	  Matches AUDIO_BLOCK_SAMPLES in the legacy firmware. At 44.1 kHz a
+	  block of 128 frames is 2.9 ms.
+
+config DUO_AUDIO_BLOCK_COUNT
+	int "Number of audio blocks in flight"
+	default 4
+	range 3 16
+	help
+	  Total buffering is BLOCK_FRAMES * BLOCK_COUNT frames. Four blocks
+	  give about 12 ms, enough to ride out an LED refresh or a burst of
+	  MIDI without the DAC running dry.
+
+config DUO_AUDIO_THREAD_PRIORITY
+	int "Audio thread priority"
+	default -8
+	help
+	  Cooperative priority, so that rendering is never preempted by the
+	  control loop.
+
+config DUO_AUDIO_THREAD_STACK_SIZE
+	int "Audio thread stack size"
+	default 2048
+
+config DUO_MIDI_RX_BUF_SIZE
+	int "MIDI receive buffer size in bytes"
+	default 256
+
+config DUO_MIDI_TX_BUF_SIZE
+	int "MIDI transmit buffer size in bytes"
+	default 256
+	help
+	  At 31250 baud the DIN output moves about 31 bytes per millisecond, so
+	  this needs to absorb a full frame's worth of parameter CCs.
+
+config DUO_USB_VID
+	hex "USB vendor ID"
+	default 0x16d0
+	help
+	  MCS Electronics, as used by the legacy firmware.
+
+config DUO_USB_PID
+	hex "USB product ID"
+	default 0x10a7
+
+config DUO_USB_MANUFACTURER
+	string "USB manufacturer string"
+	default "Dato"
+
+config DUO_USB_PRODUCT
+	string "USB product string"
+	default "Dato DUO"
+
+module = DUO
+module-str = duo
+source "subsys/logging/Kconfig.template.log_config"
+
+source "Kconfig.zephyr"

@@ -1,0 +1,23 @@
+/*
+ * Copyright (c) 2025 Dato Musical Instruments
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * USB MIDI function exposed by the firmware. This is an application-level
+ * choice rather than a property of the board, so it lives here.
+ */
+
+/ {
+	usb_midi: usb_midi {
+		compatible = "zephyr,midi2-device";
+		status = "okay";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		label = "Dato DUO";
+
+		midi_in_out@0 {
+			reg = <0 1>;
+			protocol = "midi1-up-to-128b";
+			label = "Dato DUO MIDI";
+		};
+	};
+};
