@@ -26,6 +26,7 @@ target_sources(app PRIVATE
   src/platform/pins.cpp
   src/platform/power.cpp
   src/platform/sync.cpp
+  src/platform/ump_convert.cpp
   src/platform/usb_midi.cpp
 
   # WS2812 driver for the panel. Zephyr has no FlexIO abstraction, so this
