@@ -7,6 +7,8 @@
 
 #include "../compat/duo_compat.h"
 
+#include <cstring>
+
 #include <zephyr/devicetree.h>
 #include <zephyr/kernel.h>
 #include <zephyr/linker/section_tags.h>
@@ -28,6 +30,14 @@ static int16_t delay_buffer[DELAY_SAMPLES];
 
 void Voice::init()
 {
+	/*
+	 * DTCM is not zeroed at reset and the delay line is deliberately
+	 * noinit, so without this the first 350 ms of delay would replay
+	 * whatever the previous session left behind - audible after the warm
+	 * reset that brings the DUO back up from a soft power off.
+	 */
+	memset(delay_buffer, 0, sizeof(delay_buffer));
+
 	/* Oscillators; the mixer gains keep the sum below clipping. */
 	osc_saw.set_amplitude(0.4f);
 	osc_saw.set_frequency(110.0f);
