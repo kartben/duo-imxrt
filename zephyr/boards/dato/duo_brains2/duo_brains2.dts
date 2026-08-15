@@ -1,0 +1,287 @@
+/*
+ * Copyright (c) 2025 Dato Musical Instruments
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+
+#include <nxp/imxrt/nxp_rt1010.dtsi>
+#include "duo_brains2-pinctrl.dtsi"
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/led/led.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+#include <zephyr/dt-bindings/adc/adc.h>
+
+/ {
+	model = "Dato DUO Brains 2";
+	compatible = "dato,duo-brains2", "nxp,mimxrt1011";
+
+	chosen {
+		zephyr,sram = &ocram;
+		zephyr,itcm = &itcm;
+		zephyr,dtcm = &dtcm;
+		zephyr,flash = &w25q128;
+		zephyr,flash-controller = &ext_flash_ctrl;
+		zephyr,code-partition = &code_partition;
+		zephyr,led-strip = &panel_leds;
+	};
+
+	aliases {
+		midi-uart = &lpuart1;
+		audio-out = &sai1;
+		env-led = &env_led;
+		filter-led = &filter_led;
+		osc-led = &osc_led;
+	};
+
+	/*
+	 * 4x6 button matrix: eight sequencer steps, ten keyboard keys, the
+	 * octave up/down pair, the two sequencer-mode buttons and the
+	 * play/power button. Rows idle high through their pull-ups and are
+	 * pulled down by the selected column, hence active low on both sides.
+	 */
+	keys: kbd-matrix {
+		compatible = "gpio-kbd-matrix";
+		row-gpios = <&gpio1 13 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>,
+			    <&gpio1 12 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>,
+			    <&gpio2  4 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>,
+			    <&gpio1 11 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+		col-gpios = <&gpio1 23 GPIO_ACTIVE_LOW>,
+			    <&gpio1 22 GPIO_ACTIVE_LOW>,
+			    <&gpio1 21 GPIO_ACTIVE_LOW>,
+			    <&gpio1 20 GPIO_ACTIVE_LOW>,
+			    <&gpio1 19 GPIO_ACTIVE_LOW>,
+			    <&gpio1 18 GPIO_ACTIVE_LOW>;
+		/* Matches the debounce time of the legacy firmware. */
+		debounce-down-ms = <15>;
+		debounce-up-ms = <15>;
+		/* Chords are normal on a keyboard instrument. */
+		no-ghostkey-check;
+	};
+
+	analog_mux: analog-mux {
+		compatible = "dato,duo-analog-mux";
+		status = "okay";
+		addr-gpios = <&gpio2 0 GPIO_ACTIVE_HIGH>,
+			     <&gpio2 1 GPIO_ACTIVE_HIGH>,
+			     <&gpio2 2 GPIO_ACTIVE_HIGH>;
+		io-channels = <&adc1 14>, <&adc1 3>, <&adc1 2>;
+		io-channel-names = "syn", "syn2", "brn";
+		syn-gpios = <&gpio1 28 GPIO_ACTIVE_HIGH>;
+		pinctrl-0 = <&pinmux_adc1>;
+		pinctrl-1 = <&pinmux_syn_mux_gpio>;
+		pinctrl-names = "default", "syn-gpio";
+	};
+
+	audio_path: audio-path {
+		compatible = "dato,duo-audio-path";
+		status = "okay";
+		headphone-enable-gpios = <&gpio1 25 GPIO_ACTIVE_HIGH>;
+		amp-mute-gpios = <&gpio1 24 GPIO_ACTIVE_HIGH>;
+	};
+
+	sync: sync-jacks {
+		compatible = "dato,duo-sync";
+		status = "okay";
+		in-gpios = <&gpio1 14 GPIO_ACTIVE_HIGH>;
+		out-gpios = <&gpio1 15 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * Single-colour indicator LEDs behind the panel graphics, dimmed with
+	 * FlexPWM rather than switched on and off.
+	 */
+	panel_pwm_leds: pwmleds {
+		compatible = "pwm-leds";
+
+		osc_led: osc_led {
+			pwms = <&flexpwm1_pwm3 0 PWM_MSEC(1) PWM_POLARITY_INVERTED>;
+			label = "Oscillator";
+		};
+
+		filter_led: filter_led {
+			pwms = <&flexpwm1_pwm2 1 PWM_MSEC(1) PWM_POLARITY_INVERTED>;
+			label = "Filter";
+		};
+
+		env_led: env_led {
+			pwms = <&flexpwm1_pwm1 1 PWM_MSEC(1) PWM_POLARITY_INVERTED>;
+			label = "Envelope";
+		};
+	};
+};
+
+/ {
+	soc {
+	/*
+	 * 19 SK6812 pixels: play/power button, eight sequencer steps and ten
+	 * keyboard keys. A 20th pixel is addressed but not fitted; the legacy
+	 * firmware uses it as a loopback target during production test.
+	 */
+	panel_leds: led-strip@401ac000 {
+		compatible = "dato,ws2812-flexio-imxrt";
+		reg = <0x401ac000 0x4000>;
+		status = "okay";
+		flexio-pin = <11>;		/* FLEXIO1_IO11 on GPIO_SD_05 */
+		chain-length = <19>;
+		color-mapping = <LED_COLOR_ID_GREEN>,
+				<LED_COLOR_ID_RED>,
+				<LED_COLOR_ID_BLUE>;
+		dmas = <&edma0 2 0>;		/* channel 2, FlexIO1 request 0 */
+		dma-names = "tx";
+		pinctrl-0 = <&pinmux_flexio_led>;
+		pinctrl-names = "default";
+		};
+	};
+};
+
+/* MIDI DIN in/out. The application reconfigures this to 31250 baud. */
+&lpuart1 {
+	status = "okay";
+	current-speed = <31250>;
+	pinctrl-0 = <&pinmux_lpuart1>;
+	pinctrl-names = "default";
+};
+
+/*
+ * PT8211 stereo DAC. It has no MCLK input and latches on the word-clock
+ * transition, so the application drives SAI1 left-justified with an inverted
+ * frame clock. The audio PLL is retuned here from the SoC default (48 kHz
+ * family) to 24 MHz * (30 + 66/625) = 722.5344 MHz, which divides down to
+ * exactly 44.1 kHz.
+ */
+&sai1 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_sai1>;
+	pinctrl-names = "default";
+	pll-clocks = <&anatop 0x70 0xc000 0>,
+		     <&anatop 0x70 0x7f 30>,
+		     <&anatop 0x70 0x180000 1>,
+		     <&anatop 0x80 0x3fffffff 66>,
+		     <&anatop 0x90 0x3fffffff 625>;
+	pll-clock-names = "src", "lp", "pd", "num", "den";
+	/* 722.5344 MHz / 4 / 16 = 11.2896 MHz = 256 * 44100 */
+	pre-div = <0x3>;
+	podf = <0x0f>;
+};
+
+&adc1 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_adc1>;
+	pinctrl-names = "default";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/* GPIO_AD_02: "brn" multiplexer */
+	channel@2 {
+		reg = <2>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+
+	/* GPIO_AD_03: "syn2" multiplexer */
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+
+	/* GPIO_AD_14: "syn" multiplexer */
+	channel@e {
+		reg = <14>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+};
+
+&flexpwm1_pwm1 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_flexpwm1_pwm1>;
+	pinctrl-names = "default";
+};
+
+&flexpwm1_pwm2 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_flexpwm1_pwm2>;
+	pinctrl-names = "default";
+};
+
+&flexpwm1_pwm3 {
+	status = "okay";
+	pinctrl-0 = <&pinmux_flexpwm1_pwm3>;
+	pinctrl-names = "default";
+};
+
+zephyr_udc0: &usb1 {
+	status = "okay";
+};
+
+&edma0 {
+	status = "okay";
+};
+
+&gpt_hw_timer {
+	status = "okay";
+};
+
+&systick {
+	status = "okay";
+};
+
+/*
+ * 16 Mbit Winbond QSPI NOR the SoC boots from (execute in place). The
+ * configuration mirrors brains2/sdk/xip/duobrains2_flexspi_nor_config.c.
+ */
+&flexspi {
+	status = "okay";
+	reg = <0x400a0000 0x4000>, <0x60000000 DT_SIZE_M(16)>;
+
+	ext_flash_ctrl: flash-controller@0 {
+		compatible = "nxp,imx-flexspi-nor";
+		size = <DT_SIZE_M(16 * 8)>;
+		reg = <0>;
+		spi-max-frequency = <DT_FREQ_M(133)>;
+		status = "okay";
+		jedec-id = [ef 40 18];
+
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x60000000 DT_SIZE_M(16)>;
+
+		w25q128: flash@0 {
+			compatible = "soc-nv-flash";
+			reg = <0x0 DT_SIZE_M(16)>;
+			erase-block-size = <DT_SIZE_K(4)>;
+			write-block-size = <1>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+
+			partitions {
+				#address-cells = <1>;
+				#size-cells = <1>;
+				ranges;
+
+				code_partition: partition@0 {
+					compatible = "zephyr,mapped-partition";
+					label = "firmware";
+					reg = <0x00000000 (DT_SIZE_M(15) + DT_SIZE_K(960))>;
+				};
+
+				/* Persists the MIDI channel across power cycles. */
+				storage_partition: partition@ff0000 {
+					compatible = "zephyr,mapped-partition";
+					label = "storage";
+					reg = <0x00ff0000 DT_SIZE_K(64)>;
+				};
+			};
+		};
+	};
+};
