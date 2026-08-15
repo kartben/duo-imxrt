@@ -20,6 +20,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: duo-imxrt
+
+      - name: Set up Zephyr
+        uses: zephyrproject-rtos/action-zephyr-setup@v1
+        with:
+          app-path: duo-imxrt
+          toolchains: arm-zephyr-eabi
+
+      # The MIDI and DSP code is pure logic, so it runs on the host rather
+      # than needing a DUO on the end of a debug probe.
+      - name: Run test suites
+        run: |
+          west twister -T duo-imxrt/zephyr/tests \
+            -p native_sim/native/64 \
+            --inline-logs -O twister-out
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: twister-report
+          path: |
+            twister-out/twister.xml
+            twister-out/twister.json
+          if-no-files-found: ignore
+
   build:
     name: Build ${{ matrix.variant.name }}
     runs-on: ubuntu-24.04

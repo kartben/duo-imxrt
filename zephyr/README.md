@@ -32,8 +32,27 @@ Useful variants:
 | `-- -DCONFIG_DUO_DEV_MODE=y` | Long-pressing play enters the serial downloader instead of powering off |
 | `-- -DEXTRA_CONF_FILE=rtt-debug.conf` | Logging over SEGGER RTT (the only UART is taken by MIDI) |
 
-CI builds both the release and developer-mode variants on every push; see
-`.github/workflows/zephyr-build.yml`.
+CI builds both the release and developer-mode variants on every push and runs
+the test suites; see `.github/workflows/zephyr-build.yml`.
+
+## Tests
+
+The MIDI and DSP code is pure logic, so it is tested on the host rather than on
+a DUO:
+
+```
+west twister -T duo-imxrt/zephyr/tests -p native_sim/native/64
+```
+
+| Suite | Covers |
+| --- | --- |
+| `zephyr/tests/midi` | The MIDI 1.0 parser (running status, channel filtering, sysex framing and overflow) and the UMP translation, including byte-for-byte round trips |
+| `zephyr/tests/dsp` | Each DSP primitive against the behaviour the voice relies on, plus the assembled voice: silence when idle, sound on a note, decay after release, the delay repeating one tap time later, and no wrapping at extreme gain |
+
+Both suites compile the firmware sources directly, so they break when the
+firmware does. The delay-line and envelope timings in particular are asserted
+against wall-clock milliseconds, which is what makes a change to the tap time or
+an envelope rate visible.
 
 ## Layout
 
@@ -54,6 +73,7 @@ Inside `zephyr/app/src`:
 | `globals.h`, `duo_synth.h`, `duo_drums.h`, `duo_leds.h`, `tempo.cpp` | Ports of the matching files under `brains2/apps/duo` |
 | `compat/` | Arduino-flavoured helpers and MIDI type definitions that the shared code expects |
 | `platform/` | Panel inputs, key matrix, LEDs, MIDI transports, sync jacks, power |
+| `platform/ump_convert.cpp` | MIDI 1.0 to Universal MIDI Packet translation, kept apart from the USB transport so it can be tested on the host |
 | `dsp/` | The synth voice and the I2S output stream |
 
 ## What carries over unchanged

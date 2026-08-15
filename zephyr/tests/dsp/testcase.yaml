@@ -1,0 +1,9 @@
+common:
+  tags:
+    - duo
+    - dsp
+tests:
+  duo.dsp:
+    # Pure signal processing with no hardware dependency, so it runs on the host.
+    integration_platforms:
+      - native_sim/native/64
