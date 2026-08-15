@@ -1,0 +1,72 @@
+name: Zephyr firmware
+
+on:
+  push:
+    paths:
+      - 'zephyr/**'
+      - 'shared/**'
+      - 'west.yml'
+      - '.github/workflows/zephyr-build.yml'
+  pull_request:
+    paths:
+      - 'zephyr/**'
+      - 'shared/**'
+      - 'west.yml'
+      - '.github/workflows/zephyr-build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: zephyr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.variant.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - name: release
+            args: ''
+          # The long-press-to-bootloader path is compiled out of the release
+          # build, so build it here too rather than letting it rot.
+          - name: dev-mode
+            args: '-DCONFIG_DUO_DEV_MODE=y'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Must match `self: path:` in west.yml so that the west workspace
+          # and the manifest agree on where this repository lives.
+          path: duo-imxrt
+
+      - name: Set up Zephyr
+        uses: zephyrproject-rtos/action-zephyr-setup@v1
+        with:
+          app-path: duo-imxrt
+          toolchains: arm-zephyr-eabi
+
+      - name: Build firmware
+        run: |
+          west build -p always -b duo_brains2 \
+            -d build/${{ matrix.variant.name }} \
+            duo-imxrt/zephyr/app \
+            -- ${{ matrix.variant.args }}
+
+      - name: Report memory use
+        run: |
+          west build -d build/${{ matrix.variant.name }} -t ram_report
+          west build -d build/${{ matrix.variant.name }} -t rom_report
+
+      - name: Upload firmware
+        if: matrix.variant.name == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: duo-brains2-zephyr
+          path: |
+            build/release/zephyr/zephyr.elf
+            build/release/zephyr/zephyr.bin
+            build/release/zephyr/zephyr.hex
+          if-no-files-found: error
