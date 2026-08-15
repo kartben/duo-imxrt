@@ -1,0 +1,56 @@
+# Copyright (c) 2025 Dato Musical Instruments
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Analog front end of the Dato DUO control panel.
+
+  Every potentiometer, slide switch and drum pad on the DUO is read through
+  8:1 analog multiplexers. Three multiplexers share one set of address lines
+  and each has its own I/O pad wired to an ADC input:
+
+    "syn"  - synth pots (filter res, amp, cutoff, detune, PW, env) plus the
+             GLIDE and DELAY switches
+    "syn2" - ACCENT and BITCRUSH switches and the six drum pad segments
+    "brn"  - tempo/gate pots, headphone-jack detect and sync-in detect
+
+  Channels that are logically digital are sampled with the ADC and compared
+  against a threshold, which is electrically equivalent to a high-impedance
+  digital input. The two channels that need a pull-up (GLIDE and DELAY) are
+  handled by re-muxing the "syn" pad to GPIO, which is why both a pinctrl
+  state and a GPIO specifier are given for it.
+
+compatible: "dato,duo-analog-mux"
+
+include: [base.yaml, pinctrl-device.yaml]
+
+properties:
+  addr-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      The three multiplexer address lines, least significant first.
+
+  io-channels:
+    type: phandle-array
+    required: true
+    description: ADC channel for each multiplexer I/O pad.
+
+  io-channel-names:
+    type: string-array
+    required: true
+    description: Names matching io-channels, expected to be "syn", "syn2", "brn".
+
+  syn-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      The "syn" multiplexer I/O pad expressed as a GPIO, used for the pulled-up
+      switch channels. Requires a "syn-gpio" pinctrl state that muxes the pad
+      away from the ADC and enables its pull-up.
+
+  settle-time-us:
+    type: int
+    default: 50
+    description: |
+      Delay between changing the address lines and sampling, to let the
+      multiplexer output and the RC filtering on the pot wipers settle.

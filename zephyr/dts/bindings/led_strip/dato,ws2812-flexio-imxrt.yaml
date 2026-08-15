@@ -1,0 +1,56 @@
+# Copyright (c) 2025 Dato Musical Instruments
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  WS2812 / SK6812 LED strip driven by an i.MX RT FlexIO peripheral.
+
+  FlexIO generates the WS2812 line code entirely in hardware: one shifter
+  streams the (pre-expanded) pixel bits, and four timers turn each bit into a
+  "0 code" or "1 code" pulse and enforce the reset/latch gap. Pixel data is
+  pushed into the shifter by eDMA, so a strip update costs no CPU time.
+
+  The FlexIO pin index is the FlexIO peripheral's own pin number (FLEXIO1_IOxx),
+  not a GPIO number, and the pad must be muxed to that FlexIO function through
+  the referenced pinctrl state.
+
+compatible: "dato,ws2812-flexio-imxrt"
+
+include: [ws2812.yaml, base.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  flexio-pin:
+    type: int
+    required: true
+    description: |
+      FlexIO pin index (FLEXIO1_IOxx) that carries the LED data line.
+
+  dmas:
+    required: true
+
+  dma-names:
+    required: true
+
+  clock-pre-div:
+    type: int
+    default: 5
+    description: |
+      FlexIO root clock pre-divider (actual divide-by value, 1..8). Together
+      with clock-div this must yield a 16 MHz FlexIO clock, which is what the
+      hard-coded WS2812 bit timings below assume.
+
+  clock-div:
+    type: int
+    default: 6
+    description: |
+      FlexIO root clock post-divider (actual divide-by value, 1..8).
+
+  reset-delay-bits:
+    type: int
+    default: 240
+    description: |
+      Length of the trailing reset/latch gap, in WS2812 bit periods. Newer
+      WS2812 revisions need at least 300 us; at 1.25 us per bit the default of
+      240 gives 300 us.

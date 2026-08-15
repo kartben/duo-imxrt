@@ -1,0 +1,23 @@
+# Copyright (c) 2025 Dato Musical Instruments
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Analog clock sync jacks (Korg Volca / Pocket Operator style). A pulse on the
+  input jack advances the sequencer clock; the output jack emits one pulse per
+  sequencer step. Presence of a cable on the input jack is detected through the
+  "brn" multiplexer rather than through this node.
+
+compatible: "dato,duo-sync"
+
+include: base.yaml
+
+properties:
+  in-gpios:
+    type: phandle-array
+    required: true
+    description: Sync input jack, edge-triggered.
+
+  out-gpios:
+    type: phandle-array
+    required: true
+    description: Sync output jack.
