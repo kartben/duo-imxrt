@@ -1,0 +1,10 @@
+# Makes this repository visible to the Zephyr build system as a module, so
+# that `boards/` and `dts/bindings/` below zephyr/ are picked up automatically
+# without having to pass BOARD_ROOT/DTS_ROOT on the command line.
+name: duo-imxrt
+build:
+  # No CMakeLists.txt to pull in: this module only contributes a board
+  # definition and devicetree bindings.
+  settings:
+    board_root: zephyr
+    dts_root: zephyr

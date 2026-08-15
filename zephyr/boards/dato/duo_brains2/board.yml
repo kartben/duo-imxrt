@@ -1,0 +1,6 @@
+board:
+  name: duo_brains2
+  full_name: Dato DUO Brains 2
+  vendor: dato
+  socs:
+    - name: mimxrt1011
