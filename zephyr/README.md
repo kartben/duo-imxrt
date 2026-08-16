@@ -126,6 +126,13 @@ DTCM.
 - USB MIDI is presented through the USB MIDI 2.0 class, which enumerates as a
   MIDI 1.0 endpoint on hosts that do not speak MIDI 2.0. The VID, PID and
   descriptor strings match the legacy firmware.
+- The pulse oscillator subtracts its own DC offset. A pulse of duty *d* has a
+  mean of `2d - 1`, and since the DUO's pulse width runs to 0.95 and the filter
+  passes DC at unity gain, the legacy firmware gates up to 0.14 of full scale of
+  constant offset through the amp envelope - wasted headroom, and a step at
+  every note on and note off. Removing it leaves the audible content unchanged
+  (AC RMS is identical to five decimal places) but the DUO will be marginally
+  louder before clipping and will not thump at wide pulse widths.
 
 ## Status
 

@@ -68,6 +68,19 @@ public:
 		value += poly_blep(phase);
 		value -= poly_blep(wrap(phase - pulse_width));
 
+		/*
+		 * A pulse of duty d has a mean of 2d - 1, and the filter it feeds
+		 * passes DC at unity gain. The DUO's pulse width runs to 0.95, so
+		 * without this the amp envelope would be gating up to 0.14 of full
+		 * scale of constant offset: wasted headroom, and a step at every
+		 * note on and note off.
+		 *
+		 * Removing it here rather than with a DC blocker on the output is
+		 * both cheaper and better behaved - it leaves the audible content
+		 * bit-identical and there is no filter transient to decay.
+		 */
+		value -= 2.0f * pulse_width - 1.0f;
+
 		advance();
 		return value * amplitude;
 	}

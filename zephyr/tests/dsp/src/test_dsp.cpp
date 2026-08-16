@@ -166,29 +166,100 @@ ZTEST(dsp_primitives, test_saw_stays_in_range)
 	}
 }
 
-/* The mean of a pulse wave is 2 * duty - 1, which is how pulse width is heard. */
+/*
+ * Pulse width is heard as the fraction of each period spent high. The raw
+ * waveform carries that as a DC offset of 2 * duty - 1; the oscillator
+ * subtracts it (see below), so the duty has to be measured from the sample
+ * signs instead of from the mean.
+ */
 ZTEST(dsp_primitives, test_pulse_width_sets_duty_cycle)
 {
-	const float widths[] = {0.5f, 0.75f};
+	const float widths[] = {0.5f, 0.75f, 0.95f};
 
 	for (float width : widths) {
 		dsp::Oscillator osc;
-		float sum = 0.0f;
+		int high = 0;
 
 		osc.set_frequency(441.0f);
 		osc.set_amplitude(1.0f);
 		osc.set_pulse_width(width);
 
 		for (int i = 0; i < 1000; i++) {
-			sum += osc.pulse();
+			if (osc.pulse() > 0.0f) {
+				high++;
+			}
 		}
 
-		const float mean = sum / 1000.0f;
-		const float expected = 2.0f * width - 1.0f;
+		zassert_within(high / 1000.0f, width, 0.02f,
+			       "duty %f should be high that fraction of the time, got %f",
+			       (double)width, (double)(high / 1000.0f));
+	}
+}
 
-		zassert_within(mean, expected, 0.1f,
-			       "duty %f should give mean %f, got %f", (double)width,
-			       (double)expected, (double)mean);
+/*
+ * The filter downstream passes DC at unity gain and the amp envelope gates it,
+ * so any offset here becomes wasted headroom plus a step at every note on and
+ * note off. At the panel's maximum pulse width the raw offset would be 0.45.
+ */
+ZTEST(dsp_primitives, test_pulse_is_dc_free_at_every_width)
+{
+	const float widths[] = {0.5f, 0.6f, 0.75f, 0.9f, 0.95f};
+	const float notes[] = {55.0f, 110.0f, 440.0f};
+
+	for (float width : widths) {
+		for (float note : notes) {
+			dsp::Oscillator osc;
+			float sum = 0.0f;
+			const int n = 44100;
+
+			osc.set_frequency(note);
+			osc.set_amplitude(0.5f);
+			osc.set_pulse_width(width);
+
+			for (int i = 0; i < n; i++) {
+				sum += osc.pulse();
+			}
+
+			zassert_within(sum / n, 0.0f, 0.002f,
+				       "pw %f at %f Hz still has DC: %f", (double)width,
+				       (double)note, (double)(sum / n));
+		}
+	}
+}
+
+/* Removing the DC must not touch the audible part of the waveform. */
+ZTEST(dsp_primitives, test_pulse_ac_content_is_unchanged)
+{
+	/* RMS about the mean, measured from the implementation before the fix. */
+	const struct {
+		float width;
+		float rms;
+	} cases[] = {
+		{0.50f, 0.49883f}, {0.75f, 0.43167f}, {0.90f, 0.29805f}, {0.95f, 0.21526f},
+	};
+
+	for (const auto &c : cases) {
+		dsp::Oscillator osc;
+		const int n = 44100;
+		float sum = 0.0f;
+		float sum_sq = 0.0f;
+
+		osc.set_frequency(110.0f);
+		osc.set_amplitude(0.5f);
+		osc.set_pulse_width(c.width);
+
+		for (int i = 0; i < n; i++) {
+			const float v = osc.pulse();
+
+			sum += v;
+			sum_sq += v * v;
+		}
+
+		const float mean = sum / n;
+		const float rms = sqrtf(sum_sq / n - mean * mean);
+
+		zassert_within(rms, c.rms, 0.001f, "pw %f AC content changed: %f vs %f",
+			       (double)c.width, (double)rms, (double)c.rms);
 	}
 }
 
