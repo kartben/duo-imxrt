@@ -289,10 +289,26 @@ private:
  */
 class Envelope {
 public:
-	static const int ENVELOPE_MAX = 0x10000;
+	/*
+	 * LinearEnvelope's per-sample rate is int(full_scale / samples), truncated.
+	 * At the 2^16 the legacy firmware uses, a 500 ms release at 44.1 kHz gives
+	 * a rate of 2 and actually takes 743 ms, and the whole top third of the
+	 * release pot collapses onto three distinct times. 2^24 gives the rate
+	 * enough room to be accurate to 0.13% over the panel's range, and is the
+	 * largest full scale that next() can still convert to float exactly.
+	 *
+	 * This is the port's own constant; the legacy AudioEffectCustomEnvelope
+	 * declares its own in shared/duo/effect_custom_envelope.h and is unaffected.
+	 */
+	static const int ENVELOPE_MAX = 0x1000000;
 
 	Envelope() : env(ENVELOPE_MAX, 1)
 	{
+		/*
+		 * LinearEnvelope starts with every rate at zero, which would stall
+		 * at silence if note_on() came before any of the setters below.
+		 */
+		refresh();
 	}
 
 	void attack(float ms)
@@ -343,7 +359,18 @@ private:
 			ms = 0.0f;
 		}
 
-		return (int)(ms * (SAMPLE_RATE / 1000.0f));
+		const int samples = (int)(ms * (SAMPLE_RATE / 1000.0f));
+
+		/*
+		 * Never zero: calcRate() returns 0 for a zero-length stage, and a
+		 * stage with a zero rate only advances if its end condition is
+		 * already true. attack(0) would otherwise sit at silence forever.
+		 * One sample gives the instant stage that was meant, and leaves the
+		 * deliberate decay(0) calls in voice.cpp behaving as before - their
+		 * sustain is already full scale, so they exit on the first step
+		 * either way.
+		 */
+		return samples > 0 ? samples : 1;
 	}
 
 	void refresh()

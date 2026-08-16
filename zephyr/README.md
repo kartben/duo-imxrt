@@ -142,6 +142,22 @@ DTCM.
 - The hi-hat noise generator is seeded from the entropy source at init. The
   legacy firmware starts from a fixed constant, so it replays an identical
   sequence of hi-hats on every power cycle.
+- Envelope stages now last as long as they say they do. `LinearEnvelope`
+  computes a truncated integer rate, `int(full_scale / samples)`, and against
+  the legacy full scale of 2^16 that collapses at long times: a 500 ms release
+  came out at 743 ms, and the whole top third of the release pot's travel shared
+  three distinct values, so the knob barely did anything up there. The port
+  raises its own full scale to 2^24 — 512 distinct release times instead of 46,
+  and within 0.13% of nominal across the pot. Long releases are therefore
+  *shorter* than on the legacy firmware. This is the port's own constant; the
+  legacy `AudioEffectCustomEnvelope` declares its own and is untouched.
+
+Measured and deliberately left alone: PolyBLEP aliasing on the oscillators is
+around −30 dB relative to the fundamental at the top of the DUO's range, but the
+voice always plays through its lowpass, and at the filter output that becomes
+−63 dB at a 2 kHz cutoff and −85 dB at 541 Hz. Only with the filter wide open at
+8.6 kHz on the highest note does it reach −36 dB. Oversampling the oscillators
+would be an expensive fix for something the filter already handles.
 
 ## Status
 

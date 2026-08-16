@@ -49,16 +49,165 @@ ZTEST(dsp_primitives, test_envelope_attack_reaches_full_scale)
 
 	float level = 0.0f;
 
-	/*
-	 * The shared integer envelope truncates its per-sample increment, so
-	 * the attack lands slightly late; allow a little margin past nominal.
-	 */
 	for (int i = 0; i < samples_ms(10.0f) + 100; i++) {
 		level = env.next();
 	}
 
 	zassert_within(level, 1.0f, 0.01f, "attack should reach full scale, got %f",
 		       (double)level);
+}
+
+/* Counts samples from note_on until the envelope first reaches full scale. */
+static int measure_attack(float ms)
+{
+	dsp::Envelope env;
+
+	env.attack(ms);
+	env.decay(0.0f);
+	env.sustain(1.0f);
+	env.release(100.0f);
+	env.note_on();
+
+	for (int i = 1; i <= samples_ms(ms) * 4 + 1000; i++) {
+		if (env.next() >= 1.0f) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+/* Counts samples from note_off until the envelope first reaches zero. */
+static int measure_release(float ms)
+{
+	dsp::Envelope env;
+
+	env.attack(0.1f);
+	env.decay(0.0f);
+	env.sustain(1.0f);
+	env.release(ms);
+	env.note_on();
+
+	for (int i = 0; i < samples_ms(1.0f); i++) {
+		env.next();
+	}
+
+	env.note_off();
+
+	for (int i = 1; i <= samples_ms(ms) * 4 + 1000; i++) {
+		if (env.next() <= 0.0f) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+/*
+ * The envelope rate is int(full_scale / samples), so if full scale is too small
+ * the rate truncates badly at long times. The panel asks for up to 541 ms of
+ * release; at the legacy 2^16 that took 743 ms.
+ */
+ZTEST(dsp_primitives, test_envelope_stages_hit_their_nominal_times)
+{
+	/*
+	 * 1% plus a sample. The stage always ends on a whole sample and the
+	 * nominal length rarely is one, so a 2 ms attack is 88.2 samples and
+	 * can only ever take 88 or 89. The defect this guards against was two
+	 * orders of magnitude larger than that.
+	 */
+	const float times[] = {30.0f, 60.0f, 100.0f, 200.0f, 300.0f, 400.0f, 500.0f, 541.0f};
+
+	for (float ms : times) {
+		const int got = measure_release(ms);
+		const float want = (float)samples_ms(ms);
+
+		zassert_true(got > 0, "release of %f ms never reached zero", (double)ms);
+		zassert_within((float)got, want, want * 0.01f + 1.0f,
+			       "release of %f ms took %f ms", (double)ms,
+			       (double)(got * 1000.0f / SR));
+	}
+
+	const float attacks[] = {2.0f, 15.0f, 100.0f, 500.0f};
+
+	for (float ms : attacks) {
+		const int got = measure_attack(ms);
+		const float want = (float)samples_ms(ms);
+
+		zassert_true(got > 0, "attack of %f ms never reached full scale", (double)ms);
+		zassert_within((float)got, want, want * 0.01f + 1.0f,
+			       "attack of %f ms took %f ms", (double)ms,
+			       (double)(got * 1000.0f / SR));
+	}
+}
+
+/*
+ * Accuracy is not enough on its own: the release pot has 1024 positions, and
+ * what makes it feel broken is how many of them collapse onto the same rate.
+ * The legacy full scale gave 46 distinct times, with the top third of the
+ * travel sharing three of them.
+ */
+ZTEST(dsp_primitives, test_release_pot_keeps_its_resolution)
+{
+	int previous = -1;
+	int distinct = 0;
+
+	for (int pot = 0; pot < 1024; pot++) {
+		/* The mapping duo_synth.h applies to the AMP ENV pot. */
+		const float ms = (float)(((pot * pot) >> 11) + 30);
+		const int samples = measure_release(ms);
+
+		if (samples != previous) {
+			distinct++;
+			previous = samples;
+		}
+	}
+
+	zassert_true(distinct > 400, "only %d distinct release times across the pot", distinct);
+}
+
+/*
+ * A zero length stage has a zero rate, and a stage with a zero rate only
+ * advances if its end condition is already true - so this used to sit at
+ * silence forever rather than opening instantly.
+ */
+ZTEST(dsp_primitives, test_zero_length_attack_opens_immediately)
+{
+	dsp::Envelope env;
+
+	env.attack(0.0f);
+	env.decay(0.0f);
+	env.sustain(1.0f);
+	env.release(100.0f);
+	env.note_on();
+
+	zassert_within(env.next(), 1.0f, 0.001f, "a zero length attack should open at once");
+}
+
+/* Nothing had called a setter yet, so every rate was zero. */
+ZTEST(dsp_primitives, test_untouched_envelope_still_sounds)
+{
+	dsp::Envelope env;
+
+	env.note_on();
+
+	float loudest = 0.0f;
+
+	for (int i = 0; i < 1000; i++) {
+		const float level = env.next();
+
+		if (level > loudest) {
+			loudest = level;
+		}
+	}
+
+	zassert_true(loudest > 0.0f, "a default constructed envelope should still open");
+}
+
+/* Stages longer than full scale samples used to truncate to a zero rate. */
+ZTEST(dsp_primitives, test_long_stage_still_completes)
+{
+	zassert_true(measure_release(3000.0f) > 0, "a 3 s release should still reach zero");
 }
 
 ZTEST(dsp_primitives, test_envelope_holds_at_sustain)
@@ -106,7 +255,6 @@ ZTEST(dsp_primitives, test_envelope_release_decays_to_silence)
 
 	float level = 1.0f;
 
-	/* Integer truncation makes the release run a few percent long. */
 	for (int i = 0; i < samples_ms(100.0f) * 2; i++) {
 		level = env.next();
 	}
