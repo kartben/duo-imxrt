@@ -49,16 +49,165 @@ ZTEST(dsp_primitives, test_envelope_attack_reaches_full_scale)
 
 	float level = 0.0f;
 
-	/*
-	 * The shared integer envelope truncates its per-sample increment, so
-	 * the attack lands slightly late; allow a little margin past nominal.
-	 */
 	for (int i = 0; i < samples_ms(10.0f) + 100; i++) {
 		level = env.next();
 	}
 
 	zassert_within(level, 1.0f, 0.01f, "attack should reach full scale, got %f",
 		       (double)level);
+}
+
+/* Counts samples from note_on until the envelope first reaches full scale. */
+static int measure_attack(float ms)
+{
+	dsp::Envelope env;
+
+	env.attack(ms);
+	env.decay(0.0f);
+	env.sustain(1.0f);
+	env.release(100.0f);
+	env.note_on();
+
+	for (int i = 1; i <= samples_ms(ms) * 4 + 1000; i++) {
+		if (env.next() >= 1.0f) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+/* Counts samples from note_off until the envelope first reaches zero. */
+static int measure_release(float ms)
+{
+	dsp::Envelope env;
+
+	env.attack(0.1f);
+	env.decay(0.0f);
+	env.sustain(1.0f);
+	env.release(ms);
+	env.note_on();
+
+	for (int i = 0; i < samples_ms(1.0f); i++) {
+		env.next();
+	}
+
+	env.note_off();
+
+	for (int i = 1; i <= samples_ms(ms) * 4 + 1000; i++) {
+		if (env.next() <= 0.0f) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+/*
+ * The envelope rate is int(full_scale / samples), so if full scale is too small
+ * the rate truncates badly at long times. The panel asks for up to 541 ms of
+ * release; at the legacy 2^16 that took 743 ms.
+ */
+ZTEST(dsp_primitives, test_envelope_stages_hit_their_nominal_times)
+{
+	/*
+	 * 1% plus a sample. The stage always ends on a whole sample and the
+	 * nominal length rarely is one, so a 2 ms attack is 88.2 samples and
+	 * can only ever take 88 or 89. The defect this guards against was two
+	 * orders of magnitude larger than that.
+	 */
+	const float times[] = {30.0f, 60.0f, 100.0f, 200.0f, 300.0f, 400.0f, 500.0f, 541.0f};
+
+	for (float ms : times) {
+		const int got = measure_release(ms);
+		const float want = (float)samples_ms(ms);
+
+		zassert_true(got > 0, "release of %f ms never reached zero", (double)ms);
+		zassert_within((float)got, want, want * 0.01f + 1.0f,
+			       "release of %f ms took %f ms", (double)ms,
+			       (double)(got * 1000.0f / SR));
+	}
+
+	const float attacks[] = {2.0f, 15.0f, 100.0f, 500.0f};
+
+	for (float ms : attacks) {
+		const int got = measure_attack(ms);
+		const float want = (float)samples_ms(ms);
+
+		zassert_true(got > 0, "attack of %f ms never reached full scale", (double)ms);
+		zassert_within((float)got, want, want * 0.01f + 1.0f,
+			       "attack of %f ms took %f ms", (double)ms,
+			       (double)(got * 1000.0f / SR));
+	}
+}
+
+/*
+ * Accuracy is not enough on its own: the release pot has 1024 positions, and
+ * what makes it feel broken is how many of them collapse onto the same rate.
+ * The legacy full scale gave 46 distinct times, with the top third of the
+ * travel sharing three of them.
+ */
+ZTEST(dsp_primitives, test_release_pot_keeps_its_resolution)
+{
+	int previous = -1;
+	int distinct = 0;
+
+	for (int pot = 0; pot < 1024; pot++) {
+		/* The mapping duo_synth.h applies to the AMP ENV pot. */
+		const float ms = (float)(((pot * pot) >> 11) + 30);
+		const int samples = measure_release(ms);
+
+		if (samples != previous) {
+			distinct++;
+			previous = samples;
+		}
+	}
+
+	zassert_true(distinct > 400, "only %d distinct release times across the pot", distinct);
+}
+
+/*
+ * A zero length stage has a zero rate, and a stage with a zero rate only
+ * advances if its end condition is already true - so this used to sit at
+ * silence forever rather than opening instantly.
+ */
+ZTEST(dsp_primitives, test_zero_length_attack_opens_immediately)
+{
+	dsp::Envelope env;
+
+	env.attack(0.0f);
+	env.decay(0.0f);
+	env.sustain(1.0f);
+	env.release(100.0f);
+	env.note_on();
+
+	zassert_within(env.next(), 1.0f, 0.001f, "a zero length attack should open at once");
+}
+
+/* Nothing had called a setter yet, so every rate was zero. */
+ZTEST(dsp_primitives, test_untouched_envelope_still_sounds)
+{
+	dsp::Envelope env;
+
+	env.note_on();
+
+	float loudest = 0.0f;
+
+	for (int i = 0; i < 1000; i++) {
+		const float level = env.next();
+
+		if (level > loudest) {
+			loudest = level;
+		}
+	}
+
+	zassert_true(loudest > 0.0f, "a default constructed envelope should still open");
+}
+
+/* Stages longer than full scale samples used to truncate to a zero rate. */
+ZTEST(dsp_primitives, test_long_stage_still_completes)
+{
+	zassert_true(measure_release(3000.0f) > 0, "a 3 s release should still reach zero");
 }
 
 ZTEST(dsp_primitives, test_envelope_holds_at_sustain)
@@ -106,7 +255,6 @@ ZTEST(dsp_primitives, test_envelope_release_decays_to_silence)
 
 	float level = 1.0f;
 
-	/* Integer truncation makes the release run a few percent long. */
 	for (int i = 0; i < samples_ms(100.0f) * 2; i++) {
 		level = env.next();
 	}
@@ -166,29 +314,100 @@ ZTEST(dsp_primitives, test_saw_stays_in_range)
 	}
 }
 
-/* The mean of a pulse wave is 2 * duty - 1, which is how pulse width is heard. */
+/*
+ * Pulse width is heard as the fraction of each period spent high. The raw
+ * waveform carries that as a DC offset of 2 * duty - 1; the oscillator
+ * subtracts it (see below), so the duty has to be measured from the sample
+ * signs instead of from the mean.
+ */
 ZTEST(dsp_primitives, test_pulse_width_sets_duty_cycle)
 {
-	const float widths[] = {0.5f, 0.75f};
+	const float widths[] = {0.5f, 0.75f, 0.95f};
 
 	for (float width : widths) {
 		dsp::Oscillator osc;
-		float sum = 0.0f;
+		int high = 0;
 
 		osc.set_frequency(441.0f);
 		osc.set_amplitude(1.0f);
 		osc.set_pulse_width(width);
 
 		for (int i = 0; i < 1000; i++) {
-			sum += osc.pulse();
+			if (osc.pulse() > 0.0f) {
+				high++;
+			}
 		}
 
-		const float mean = sum / 1000.0f;
-		const float expected = 2.0f * width - 1.0f;
+		zassert_within(high / 1000.0f, width, 0.02f,
+			       "duty %f should be high that fraction of the time, got %f",
+			       (double)width, (double)(high / 1000.0f));
+	}
+}
 
-		zassert_within(mean, expected, 0.1f,
-			       "duty %f should give mean %f, got %f", (double)width,
-			       (double)expected, (double)mean);
+/*
+ * The filter downstream passes DC at unity gain and the amp envelope gates it,
+ * so any offset here becomes wasted headroom plus a step at every note on and
+ * note off. At the panel's maximum pulse width the raw offset would be 0.45.
+ */
+ZTEST(dsp_primitives, test_pulse_is_dc_free_at_every_width)
+{
+	const float widths[] = {0.5f, 0.6f, 0.75f, 0.9f, 0.95f};
+	const float notes[] = {55.0f, 110.0f, 440.0f};
+
+	for (float width : widths) {
+		for (float note : notes) {
+			dsp::Oscillator osc;
+			float sum = 0.0f;
+			const int n = 44100;
+
+			osc.set_frequency(note);
+			osc.set_amplitude(0.5f);
+			osc.set_pulse_width(width);
+
+			for (int i = 0; i < n; i++) {
+				sum += osc.pulse();
+			}
+
+			zassert_within(sum / n, 0.0f, 0.002f,
+				       "pw %f at %f Hz still has DC: %f", (double)width,
+				       (double)note, (double)(sum / n));
+		}
+	}
+}
+
+/* Removing the DC must not touch the audible part of the waveform. */
+ZTEST(dsp_primitives, test_pulse_ac_content_is_unchanged)
+{
+	/* RMS about the mean, measured from the implementation before the fix. */
+	const struct {
+		float width;
+		float rms;
+	} cases[] = {
+		{0.50f, 0.49883f}, {0.75f, 0.43167f}, {0.90f, 0.29805f}, {0.95f, 0.21526f},
+	};
+
+	for (const auto &c : cases) {
+		dsp::Oscillator osc;
+		const int n = 44100;
+		float sum = 0.0f;
+		float sum_sq = 0.0f;
+
+		osc.set_frequency(110.0f);
+		osc.set_amplitude(0.5f);
+		osc.set_pulse_width(c.width);
+
+		for (int i = 0; i < n; i++) {
+			const float v = osc.pulse();
+
+			sum += v;
+			sum_sq += v * v;
+		}
+
+		const float mean = sum / n;
+		const float rms = sqrtf(sum_sq / n - mean * mean);
+
+		zassert_within(rms, c.rms, 0.001f, "pw %f AC content changed: %f vs %f",
+			       (double)c.width, (double)rms, (double)c.rms);
 	}
 }
 
@@ -259,6 +478,111 @@ ZTEST(dsp_primitives, test_filter_modulation_opens_the_cutoff)
 	zassert_true(rms[1] > rms[0] * 2.0f,
 		     "opening the cutoff by four octaves should pass much more: %f vs %f",
 		     (double)rms[1], (double)rms[0]);
+}
+
+/*
+ * The filter follows its envelope on every sample, so it uses polynomials
+ * rather than sinf()/exp2f(). They only have to hold over the range the
+ * filter's own clamps allow.
+ */
+ZTEST(dsp_primitives, test_fast_math_matches_libm)
+{
+	/* PI * hz / (2 * SR) for hz up to the SR/4 clamp. */
+	const float max_arg = dsp::PI_F * (SR * 0.25f) / (SR * 2.0f);
+
+	for (int i = 0; i <= 20000; i++) {
+		const float x = max_arg * (float)i / 20000.0f;
+
+		zassert_within(dsp::sin_poly(x), sinf(x), 1e-6f,
+			       "sin_poly(%f) = %f, want %f", (double)x,
+			       (double)dsp::sin_poly(x), (double)sinf(x));
+	}
+
+	for (int i = 0; i <= 20000; i++) {
+		const float x = dsp::EXP2_MAX * (float)i / 20000.0f;
+		const float want = exp2f(x);
+
+		zassert_within(dsp::exp2_poly(x), want, want * 1e-4f,
+			       "exp2_poly(%f) = %f, want %f", (double)x,
+			       (double)dsp::exp2_poly(x), (double)want);
+	}
+
+	/* Exact at integer exponents, so an unmodulated filter is unaffected. */
+	for (int i = 0; i <= 8; i++) {
+		zassert_equal(dsp::exp2_poly((float)i), exp2f((float)i),
+			      "exp2_poly(%d) should be exact", i);
+	}
+}
+
+/*
+ * Modulating up by N octaves must land on the same filter as tuning the base
+ * frequency up by N octaves - this is what wires the polynomials to the sound.
+ */
+ZTEST(dsp_primitives, test_modulation_matches_an_equivalent_base_frequency)
+{
+	const float modulations[] = {0.0f, 0.25f, 0.5f, 1.0f};
+
+	for (float m : modulations) {
+		dsp::StateVariableFilter modulated;
+		dsp::StateVariableFilter tuned;
+
+		modulated.set_frequency(200.0f);
+		modulated.set_resonance(0.7f);
+		modulated.set_octave_control(4.0f);
+		modulated.set_modulation(m);
+
+		tuned.set_frequency(200.0f * exp2f(m * 4.0f));
+		tuned.set_resonance(0.7f);
+
+		for (int i = 0; i < 4410; i++) {
+			const float x = sinf(2.0f * dsp::PI_F * 500.0f * (float)i / SR);
+
+			modulated.process(x);
+			tuned.process(x);
+
+			zassert_within(modulated.low(), tuned.low(), 1e-3f,
+				       "modulation %f diverged at sample %d: %f vs %f",
+				       (double)m, i, (double)modulated.low(),
+				       (double)tuned.low());
+		}
+	}
+}
+
+/*
+ * The Chamberlin topology can run away when the coefficient gets large
+ * relative to the damping. Two passes per sample is what buys the margin, so
+ * this pins the whole cutoff/resonance space rather than a single corner.
+ */
+ZTEST(dsp_primitives, test_filter_is_stable_across_its_whole_range)
+{
+	const float cutoffs[] = {541.0f, 2000.0f, 4000.0f, 8656.0f, 11025.0f};
+	const float resonances[] = {0.7f, 3.2f, 4.0f, 5.0f};
+
+	for (float hz : cutoffs) {
+		for (float q : resonances) {
+			dsp::StateVariableFilter filter;
+			float loudest = 0.0f;
+
+			filter.set_frequency(hz);
+			filter.set_resonance(q);
+
+			/* Excited at the cutoff, the worst case for ringing. */
+			for (int i = 0; i < 200000; i++) {
+				filter.process(0.2f * sinf(2.0f * dsp::PI_F * hz *
+							   (float)i / SR));
+
+				const float v = fabsf(filter.low());
+
+				if (v > loudest) {
+					loudest = v;
+				}
+			}
+
+			zassert_true(loudest < 2.0f,
+				     "filter blew up at %f Hz Q %f: peak %f", (double)hz,
+				     (double)q, (double)loudest);
+		}
+	}
 }
 
 /* --- Bitcrusher -------------------------------------------------------- */
@@ -395,6 +719,68 @@ ZTEST(dsp_primitives, test_simple_drum_sounds_then_stops)
 	}
 }
 
+/*
+ * The decay is accumulated one multiply at a time rather than calling expf()
+ * on every sample. It has to stay on the curve it replaces.
+ */
+ZTEST(dsp_primitives, test_simple_drum_decay_matches_an_exact_exponential)
+{
+	const uint32_t lengths[] = {30, 100, 200};
+
+	for (uint32_t ms : lengths) {
+		dsp::SimpleDrum drum;
+		const int n = samples_ms((float)ms);
+
+		/* No pitch sweep, so the sine is a known reference too. */
+		drum.set_length(ms);
+		drum.set_frequency(100.0f);
+		drum.set_pitch_mod(1.0f);
+		drum.note_on();
+
+		float phase = 0.0f;
+
+		for (int i = 0; i < n; i++) {
+			phase += 100.0f / SR;
+			if (phase >= 1.0f) {
+				phase -= 1.0f;
+			}
+
+			const float want =
+				sinf(2.0f * dsp::PI_F * phase) * expf(-5.0f * (float)i / (float)n);
+			/* Held in a local: next() advances the drum, so it must
+			 * not be evaluated again for the failure message.
+			 */
+			const float got = drum.next();
+
+			/* Half an LSB at 16 bit. */
+			zassert_within(got, want, 1.0f / 65536.0f, "length %u sample %d: %f vs %f",
+				       ms, i, (double)got, (double)want);
+		}
+	}
+}
+
+/* --- Sample conversion ------------------------------------------------- */
+
+ZTEST(dsp_primitives, test_to_pcm16_rounds_to_nearest)
+{
+	/* A plain cast truncates towards zero; these all sit between codes. */
+	zassert_equal(dsp::to_pcm16(1.0f), 32767);
+	zassert_equal(dsp::to_pcm16(-1.0f), -32767);
+	zassert_equal(dsp::to_pcm16(0.0f), 0);
+
+	/* 0.99998474 * 32767 = 32766.5, which truncation would put at 32766. */
+	zassert_equal(dsp::to_pcm16(32766.5f / 32767.0f), 32767);
+	zassert_equal(dsp::to_pcm16(-32766.5f / 32767.0f), -32767);
+
+	/* Rounding must never bias one way: symmetric input, symmetric output. */
+	for (int i = 1; i < 1000; i++) {
+		const float v = (float)i / 1000.0f;
+
+		zassert_equal(dsp::to_pcm16(v), -dsp::to_pcm16(-v),
+			      "rounding is asymmetric at %f", (double)v);
+	}
+}
+
 /* --- White noise ------------------------------------------------------- */
 
 ZTEST(dsp_primitives, test_white_noise)
@@ -421,4 +807,53 @@ ZTEST(dsp_primitives, test_white_noise)
 	}
 
 	zassert_true(varies, "noise should not be constant");
+}
+
+/*
+ * Left on its built-in constant the generator replays the same sequence from
+ * every power-up, so every hi-hat sounds identical boot to boot.
+ */
+ZTEST(dsp_primitives, test_white_noise_seed)
+{
+	dsp::WhiteNoise a;
+	dsp::WhiteNoise b;
+	dsp::WhiteNoise c;
+	int differences = 0;
+
+	a.set_amplitude(1.0f);
+	b.set_amplitude(1.0f);
+	c.set_amplitude(1.0f);
+
+	a.seed(1);
+	b.seed(2);
+	c.seed(1);
+
+	for (int i = 0; i < 1000; i++) {
+		const float from_a = a.next();
+
+		/* Same seed reproduces exactly, so tests stay deterministic. */
+		zassert_equal(from_a, c.next(), "the same seed must give the same sequence");
+
+		if (from_a != b.next()) {
+			differences++;
+		}
+	}
+
+	zassert_true(differences > 900, "different seeds should give different noise, %d/1000",
+		     differences);
+
+	/* Zero would lock xorshift up permanently. */
+	dsp::WhiteNoise zeroed;
+	bool nonzero = false;
+
+	zeroed.set_amplitude(1.0f);
+	zeroed.seed(0);
+
+	for (int i = 0; i < 100; i++) {
+		if (zeroed.next() != 0.0f) {
+			nonzero = true;
+		}
+	}
+
+	zassert_true(nonzero, "a zero seed must not stall the generator");
 }

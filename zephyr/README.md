@@ -47,7 +47,8 @@ west twister -T duo-imxrt/zephyr/tests -p native_sim/native/64
 | Suite | Covers |
 | --- | --- |
 | `zephyr/tests/midi` | The MIDI 1.0 parser (running status, channel filtering, sysex framing and overflow) and the UMP translation, including byte-for-byte round trips |
-| `zephyr/tests/dsp` | Each DSP primitive against the behaviour the voice relies on, plus the assembled voice: silence when idle, sound on a note, decay after release, the delay repeating one tap time later, and no wrapping at extreme gain |
+| `zephyr/tests/tempo` | The internal clock generator: the TEMPO pot mapping, and that ticks neither drift over a minute nor jitter further than one poll interval, survive the microsecond counter's 32-bit wrap, and catch up after a late poll |
+| `zephyr/tests/dsp` | Each DSP primitive against the behaviour the voice relies on, plus the assembled voice: silence when idle, sound on a note, decay after release, the delay repeating one tap time later, and no wrapping at extreme gain. Also pins the numerical shortcuts — the fast `sin`/`exp2` against libm, the drum decay against an exact exponential, filter stability across its whole cutoff and resonance range, and that the output carries no DC |
 
 Both suites compile the firmware sources directly, so they break when the
 firmware does. The delay-line and envelope timings in particular are asserted
@@ -71,6 +72,7 @@ Inside `zephyr/app/src`:
 | --- | --- |
 | `main.cpp` | Control loop, key handling, power management |
 | `globals.h`, `duo_synth.h`, `duo_drums.h`, `duo_leds.h`, `tempo.cpp` | Ports of the matching files under `brains2/apps/duo` |
+| `tempo_clock.cpp` | The clock generator's arithmetic, kept apart from `tempo.cpp` so it can be tested without the MIDI and sync transports |
 | `compat/` | Arduino-flavoured helpers and MIDI type definitions that the shared code expects |
 | `platform/` | Panel inputs, key matrix, LEDs, MIDI transports, sync jacks, power |
 | `platform/ump_convert.cpp` | MIDI 1.0 to Universal MIDI Packet translation, kept apart from the USB transport so it can be tested on the host |
@@ -126,6 +128,43 @@ DTCM.
 - USB MIDI is presented through the USB MIDI 2.0 class, which enumerates as a
   MIDI 1.0 endpoint on hosts that do not speak MIDI 2.0. The VID, PID and
   descriptor strings match the legacy firmware.
+- The pulse oscillator subtracts its own DC offset. A pulse of duty *d* has a
+  mean of `2d - 1`, and since the DUO's pulse width runs to 0.95 and the filter
+  passes DC at unity gain, the legacy firmware gates up to 0.14 of full scale of
+  constant offset through the amp envelope — wasted headroom, and a step at
+  every note on and note off. Removing it leaves the audible content unchanged
+  (AC RMS is identical to five decimal places) but the DUO will be marginally
+  louder before clipping and will not thump at wide pulse widths.
+- The filter's cutoff modulation, the drum decay envelope and the output sample
+  conversion use polynomial approximations and incremental updates in place of
+  `exp2f()`, `expf()` and a truncating cast. All three are pinned against the
+  exact functions in the DSP tests: the filter cutoff is within 0.15 cents, the
+  drum decay within a quarter of an LSB at 16 bit, and the sample conversion now
+  rounds to nearest instead of towards zero.
+- The hi-hat noise generator is seeded from the entropy source at init. The
+  legacy firmware starts from a fixed constant, so it replays an identical
+  sequence of hi-hats on every power cycle.
+- Envelope stages now last as long as they say they do. `LinearEnvelope`
+  computes a truncated integer rate, `int(full_scale / samples)`, and against
+  the legacy full scale of 2^16 that collapses at long times: a 500 ms release
+  came out at 743 ms, and the whole top third of the release pot's travel shared
+  three distinct values, so the knob barely did anything up there. The port
+  raises its own full scale to 2^24 — 512 distinct release times instead of 46,
+  and within 0.13% of nominal across the pot. Long releases are therefore
+  *shorter* than on the legacy firmware. This is the port's own constant; the
+  legacy `AudioEffectCustomEnvelope` declares its own and is untouched.
+- The internal clock reads `micros()` rather than `millis()`. Its accumulator
+  was always in microseconds, so driving it from a millisecond clock pinned
+  every tick to a millisecond boundary — 0.83 ms of jitter at 120 BPM, exported
+  on the MIDI clock and the sync jack. The clock is also serviced on every pass
+  of the control loop instead of being skipped during the panel repaint.
+
+Measured and deliberately left alone: PolyBLEP aliasing on the oscillators is
+around −30 dB relative to the fundamental at the top of the DUO's range, but the
+voice always plays through its lowpass, and at the filter output that becomes
+−63 dB at a 2 kHz cutoff and −85 dB at 541 Hz. Only with the filter wide open at
+8.6 kHz on the highest note does it reach −36 dB. Oversampling the oscillators
+would be an expensive fix for something the filter already handles.
 
 ## Status
 

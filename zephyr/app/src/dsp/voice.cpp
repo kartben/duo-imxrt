@@ -12,6 +12,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/kernel.h>
 #include <zephyr/linker/section_tags.h>
+#include <zephyr/random/random.h>
 
 namespace duo {
 
@@ -77,6 +78,12 @@ void Voice::init()
 	delay_in_gain = 0.5f;
 	delay_fb_gain = 0.4f;
 	delay_hat_gain = 0.0f;
+
+	/*
+	 * Seeded from the entropy source rather than left on its constant, so
+	 * the hi-hat is not the same sequence of noise on every power cycle.
+	 */
+	hat_noise.seed(sys_rand32_get());
 
 	/* Hi-hat: noise through a high pass into a band pass, plus a click. */
 	hat_env.attack(2.0f);
@@ -214,8 +221,8 @@ void Voice::render(int16_t *out, size_t frames)
 		const float left = dsp::clampf(mix * headphone_gain, -1.0f, 1.0f);
 		const float right = dsp::clampf(mix * speaker_gain, -1.0f, 1.0f);
 
-		out[2 * i] = (int16_t)(left * 32767.0f);
-		out[2 * i + 1] = (int16_t)(right * 32767.0f);
+		out[2 * i] = dsp::to_pcm16(left);
+		out[2 * i + 1] = dsp::to_pcm16(right);
 	}
 }
 
