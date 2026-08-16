@@ -31,6 +31,66 @@ static inline float clampf(float v, float lo, float hi)
 }
 
 /*
+ * Full scale sample conversion, rounding to nearest rather than truncating
+ * towards zero as a plain cast would - truncation is a half LSB error that
+ * changes sign with the signal, which is crossover distortion at low levels.
+ *
+ * Written out rather than calling lrintf() because GCC emits a real library
+ * call for that even with -fno-math-errno, and this runs three times a frame.
+ * The caller must have clamped `v` to +/-1 already.
+ */
+static inline int16_t to_pcm16(float v)
+{
+	return (int16_t)(int32_t)(v * 32767.0f + (v >= 0.0f ? 0.5f : -0.5f));
+}
+
+/*
+ * sinf() and exp2f() are software routines on this core, and the filter needs
+ * both of them on every sample to follow its envelope. Neither is needed at
+ * full range: the arguments below are bounded by the filter's own clamps, so a
+ * short polynomial covers them to far better than 16 bit precision. See
+ * test_fast_math_matches_libm in the DSP tests, which pins the error.
+ */
+
+/* sin(x) to within 3e-7 absolute over 0 <= x <= PI/8, the filter's range. */
+static inline float sin_poly(float x)
+{
+	const float x2 = x * x;
+
+	/* x - x^3/6 + x^5/120 */
+	return x * (1.0f - x2 * (1.0f / 6.0f) * (1.0f - x2 * (1.0f / 20.0f)));
+}
+
+/* Largest exponent exp2_poly() accepts; the filter never asks for more than 4. */
+static constexpr float EXP2_MAX = 8.0f;
+
+/* 2^x for 0 <= x <= EXP2_MAX, to within 9e-5 relative and exact at integers. */
+static inline float exp2_poly(float x)
+{
+	static const float POW2[] = {1.0f,  2.0f,  4.0f,   8.0f,  16.0f,
+				     32.0f, 64.0f, 128.0f, 256.0f};
+
+	x = clampf(x, 0.0f, EXP2_MAX);
+
+	/* x is non-negative, so a truncating cast is the integer part. */
+	const int whole = (int)x;
+	const float frac = x - (float)whole;
+
+	/*
+	 * 2^f = e^(f ln2), truncated after the f^5 term. The coefficients are
+	 * just ln(2)^k / k!, which is easier to check by eye than a minimax
+	 * fit and, over [0, 1), is already accurate to 8.5e-5.
+	 */
+	const float mantissa =
+		1.0f + frac * (0.69314718f +
+			       frac * (0.24022651f +
+				       frac * (0.05550411f +
+					       frac * (0.00961813f + frac * 0.00133336f))));
+
+	return POW2[whole] * mantissa;
+}
+
+/*
  * Band-limited oscillator, standing in for AudioSynthWaveform in
  * WAVEFORM_BANDLIMIT_SAWTOOTH / WAVEFORM_BANDLIMIT_PULSE mode. Discontinuities
  * are smoothed with PolyBLEP, which is the cheap equivalent of the Teensy
@@ -143,6 +203,7 @@ public:
 	void set_frequency(float hz)
 	{
 		base_frequency = clampf(hz, 20.0f, SAMPLE_RATE * 0.4f);
+		base_argument = PI_F * base_frequency / (SAMPLE_RATE * 2.0f);
 		update_coefficient(1.0f);
 	}
 
@@ -157,10 +218,17 @@ public:
 		octave_control = octaves;
 	}
 
-	/* `modulation` runs 0 to 1 and shifts the cutoff up by that many octaves. */
+	/*
+	 * `modulation` runs 0 to 1 and shifts the cutoff up by that many
+	 * octaves. This is called once per sample to follow the filter
+	 * envelope, so it takes the polynomial path rather than exp2f/sinf.
+	 */
 	void set_modulation(float modulation)
 	{
-		update_coefficient(exp2f(modulation * octave_control));
+		const float argument = clampf(base_argument * exp2_poly(modulation * octave_control),
+					      MIN_ARGUMENT, MAX_ARGUMENT);
+
+		coefficient = 2.0f * sin_poly(argument);
 	}
 
 	void process(float in)
@@ -192,6 +260,10 @@ public:
 	}
 
 private:
+	/* The cutoff clamp of update_coefficient(), expressed as its own argument. */
+	static constexpr float MIN_ARGUMENT = PI_F * 20.0f / (SAMPLE_RATE * 2.0f);
+	static constexpr float MAX_ARGUMENT = PI_F * (SAMPLE_RATE * 0.25f) / (SAMPLE_RATE * 2.0f);
+
 	void update_coefficient(float multiplier)
 	{
 		const float hz = clampf(base_frequency * multiplier, 20.0f, SAMPLE_RATE * 0.25f);
@@ -200,6 +272,8 @@ private:
 	}
 
 	float base_frequency = 400.0f;
+	/* PI * base_frequency / (2 * SAMPLE_RATE), so set_modulation() only scales. */
+	float base_argument = PI_F * 400.0f / (SAMPLE_RATE * 2.0f);
 	float coefficient = 0.05f;
 	float damping = 1.0f / 0.7f;
 	float octave_control = 0.0f;
@@ -382,6 +456,14 @@ public:
 	{
 		remaining = length_samples;
 		phase = 0.0f;
+		amplitude = 1.0f;
+		/*
+		 * The decay is expf(-5 * progress) and progress advances by
+		 * 1/length_samples per sample, so the same curve is one multiply
+		 * per sample once this ratio is known. Over the DUO's drum
+		 * lengths the two agree to within a quarter of an LSB at 16 bit.
+		 */
+		decay = expf(-5.0f / (float)length_samples);
 	}
 
 	float next()
@@ -393,7 +475,6 @@ public:
 		const float progress = 1.0f - ((float)remaining / (float)length_samples);
 		/* Sweep from pitch_mod * f down to f across the note. */
 		const float hz = frequency * (1.0f + (pitch_mod - 1.0f) * (1.0f - progress));
-		const float amplitude = expf(-5.0f * progress);
 
 		phase += hz / SAMPLE_RATE;
 		if (phase >= 1.0f) {
@@ -402,7 +483,11 @@ public:
 
 		remaining--;
 
-		return sinf(2.0f * PI_F * phase) * amplitude;
+		const float value = sinf(2.0f * PI_F * phase) * amplitude;
+
+		amplitude *= decay;
+
+		return value;
 	}
 
 private:
@@ -411,11 +496,23 @@ private:
 	float frequency = 60.0f;
 	float pitch_mod = 1.0f;
 	float phase = 0.0f;
+	float amplitude = 0.0f;
+	float decay = 1.0f;
 };
 
 /* White noise, standing in for AudioSynthNoiseWhite. */
 class WhiteNoise {
 public:
+	/*
+	 * Without this the generator starts from the same constant every boot,
+	 * so every power cycle produces an identical sequence of hi-hats.
+	 */
+	void seed(uint32_t value)
+	{
+		/* xorshift32 is stuck at zero, so never let it start there. */
+		state = value != 0 ? value : 0x13579bdf;
+	}
+
 	void set_amplitude(float value)
 	{
 		amplitude = clampf(value, 0.0f, 1.0f);
@@ -454,11 +551,24 @@ public:
 
 	float process(float in, int16_t *buffer)
 	{
-		const size_t read_pos = (write_pos + Samples - delay_samples) % Samples;
+		/*
+		 * Samples is not a power of two, so the modulo this replaces cost
+		 * a multiply-shift sequence. Neither index can be more than one
+		 * period out, so a conditional subtract is equivalent.
+		 */
+		size_t read_pos = write_pos + Samples - delay_samples;
+
+		if (read_pos >= Samples) {
+			read_pos -= Samples;
+		}
+
 		const float out = (float)buffer[read_pos] * (1.0f / 32768.0f);
 
-		buffer[write_pos] = (int16_t)(clampf(in, -1.0f, 1.0f) * 32767.0f);
-		write_pos = (write_pos + 1) % Samples;
+		buffer[write_pos] = to_pcm16(clampf(in, -1.0f, 1.0f));
+
+		if (++write_pos >= Samples) {
+			write_pos = 0;
+		}
 
 		return out;
 	}

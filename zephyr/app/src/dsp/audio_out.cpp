@@ -24,6 +24,11 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#if defined(CONFIG_FPU) && defined(CONFIG_ARMV7_M_ARMV8_M_FP)
+#include <cmsis_core.h>
+#define DUO_HAVE_FPSCR 1
+#endif
+
 LOG_MODULE_REGISTER(duo_audio_out, CONFIG_DUO_LOG_LEVEL);
 
 static const struct device *const i2s_dev = DEVICE_DT_GET(DT_ALIAS(audio_out));
@@ -71,11 +76,28 @@ static int queue_block(void)
 	return ret;
 }
 
+/*
+ * The filter states and the delay feedback decay asymptotically towards zero,
+ * so during silence they end up in the denormal range where the FPU is slower.
+ * Flush-to-zero costs nothing musically at 16 bit output and keeps the render
+ * time flat. FPSCR is saved and restored per thread when FPU sharing is on, so
+ * this has to be set from inside the audio thread rather than at init.
+ */
+static inline void enable_flush_to_zero(void)
+{
+#ifdef DUO_HAVE_FPSCR
+	/* FPSCR bit 24 is FZ. */
+	__set_FPSCR(__get_FPSCR() | (1UL << 24));
+#endif
+}
+
 static void audio_thread_fn(void *a, void *b, void *c)
 {
 	ARG_UNUSED(a);
 	ARG_UNUSED(b);
 	ARG_UNUSED(c);
+
+	enable_flush_to_zero();
 
 	while (running) {
 		int ret = queue_block();

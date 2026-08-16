@@ -332,6 +332,111 @@ ZTEST(dsp_primitives, test_filter_modulation_opens_the_cutoff)
 		     (double)rms[1], (double)rms[0]);
 }
 
+/*
+ * The filter follows its envelope on every sample, so it uses polynomials
+ * rather than sinf()/exp2f(). They only have to hold over the range the
+ * filter's own clamps allow.
+ */
+ZTEST(dsp_primitives, test_fast_math_matches_libm)
+{
+	/* PI * hz / (2 * SR) for hz up to the SR/4 clamp. */
+	const float max_arg = dsp::PI_F * (SR * 0.25f) / (SR * 2.0f);
+
+	for (int i = 0; i <= 20000; i++) {
+		const float x = max_arg * (float)i / 20000.0f;
+
+		zassert_within(dsp::sin_poly(x), sinf(x), 1e-6f,
+			       "sin_poly(%f) = %f, want %f", (double)x,
+			       (double)dsp::sin_poly(x), (double)sinf(x));
+	}
+
+	for (int i = 0; i <= 20000; i++) {
+		const float x = dsp::EXP2_MAX * (float)i / 20000.0f;
+		const float want = exp2f(x);
+
+		zassert_within(dsp::exp2_poly(x), want, want * 1e-4f,
+			       "exp2_poly(%f) = %f, want %f", (double)x,
+			       (double)dsp::exp2_poly(x), (double)want);
+	}
+
+	/* Exact at integer exponents, so an unmodulated filter is unaffected. */
+	for (int i = 0; i <= 8; i++) {
+		zassert_equal(dsp::exp2_poly((float)i), exp2f((float)i),
+			      "exp2_poly(%d) should be exact", i);
+	}
+}
+
+/*
+ * Modulating up by N octaves must land on the same filter as tuning the base
+ * frequency up by N octaves - this is what wires the polynomials to the sound.
+ */
+ZTEST(dsp_primitives, test_modulation_matches_an_equivalent_base_frequency)
+{
+	const float modulations[] = {0.0f, 0.25f, 0.5f, 1.0f};
+
+	for (float m : modulations) {
+		dsp::StateVariableFilter modulated;
+		dsp::StateVariableFilter tuned;
+
+		modulated.set_frequency(200.0f);
+		modulated.set_resonance(0.7f);
+		modulated.set_octave_control(4.0f);
+		modulated.set_modulation(m);
+
+		tuned.set_frequency(200.0f * exp2f(m * 4.0f));
+		tuned.set_resonance(0.7f);
+
+		for (int i = 0; i < 4410; i++) {
+			const float x = sinf(2.0f * dsp::PI_F * 500.0f * (float)i / SR);
+
+			modulated.process(x);
+			tuned.process(x);
+
+			zassert_within(modulated.low(), tuned.low(), 1e-3f,
+				       "modulation %f diverged at sample %d: %f vs %f",
+				       (double)m, i, (double)modulated.low(),
+				       (double)tuned.low());
+		}
+	}
+}
+
+/*
+ * The Chamberlin topology can run away when the coefficient gets large
+ * relative to the damping. Two passes per sample is what buys the margin, so
+ * this pins the whole cutoff/resonance space rather than a single corner.
+ */
+ZTEST(dsp_primitives, test_filter_is_stable_across_its_whole_range)
+{
+	const float cutoffs[] = {541.0f, 2000.0f, 4000.0f, 8656.0f, 11025.0f};
+	const float resonances[] = {0.7f, 3.2f, 4.0f, 5.0f};
+
+	for (float hz : cutoffs) {
+		for (float q : resonances) {
+			dsp::StateVariableFilter filter;
+			float loudest = 0.0f;
+
+			filter.set_frequency(hz);
+			filter.set_resonance(q);
+
+			/* Excited at the cutoff, the worst case for ringing. */
+			for (int i = 0; i < 200000; i++) {
+				filter.process(0.2f * sinf(2.0f * dsp::PI_F * hz *
+							   (float)i / SR));
+
+				const float v = fabsf(filter.low());
+
+				if (v > loudest) {
+					loudest = v;
+				}
+			}
+
+			zassert_true(loudest < 2.0f,
+				     "filter blew up at %f Hz Q %f: peak %f", (double)hz,
+				     (double)q, (double)loudest);
+		}
+	}
+}
+
 /* --- Bitcrusher -------------------------------------------------------- */
 
 ZTEST(dsp_primitives, test_bitcrusher_transparent_at_full_rate)
@@ -466,6 +571,68 @@ ZTEST(dsp_primitives, test_simple_drum_sounds_then_stops)
 	}
 }
 
+/*
+ * The decay is accumulated one multiply at a time rather than calling expf()
+ * on every sample. It has to stay on the curve it replaces.
+ */
+ZTEST(dsp_primitives, test_simple_drum_decay_matches_an_exact_exponential)
+{
+	const uint32_t lengths[] = {30, 100, 200};
+
+	for (uint32_t ms : lengths) {
+		dsp::SimpleDrum drum;
+		const int n = samples_ms((float)ms);
+
+		/* No pitch sweep, so the sine is a known reference too. */
+		drum.set_length(ms);
+		drum.set_frequency(100.0f);
+		drum.set_pitch_mod(1.0f);
+		drum.note_on();
+
+		float phase = 0.0f;
+
+		for (int i = 0; i < n; i++) {
+			phase += 100.0f / SR;
+			if (phase >= 1.0f) {
+				phase -= 1.0f;
+			}
+
+			const float want =
+				sinf(2.0f * dsp::PI_F * phase) * expf(-5.0f * (float)i / (float)n);
+			/* Held in a local: next() advances the drum, so it must
+			 * not be evaluated again for the failure message.
+			 */
+			const float got = drum.next();
+
+			/* Half an LSB at 16 bit. */
+			zassert_within(got, want, 1.0f / 65536.0f, "length %u sample %d: %f vs %f",
+				       ms, i, (double)got, (double)want);
+		}
+	}
+}
+
+/* --- Sample conversion ------------------------------------------------- */
+
+ZTEST(dsp_primitives, test_to_pcm16_rounds_to_nearest)
+{
+	/* A plain cast truncates towards zero; these all sit between codes. */
+	zassert_equal(dsp::to_pcm16(1.0f), 32767);
+	zassert_equal(dsp::to_pcm16(-1.0f), -32767);
+	zassert_equal(dsp::to_pcm16(0.0f), 0);
+
+	/* 0.99998474 * 32767 = 32766.5, which truncation would put at 32766. */
+	zassert_equal(dsp::to_pcm16(32766.5f / 32767.0f), 32767);
+	zassert_equal(dsp::to_pcm16(-32766.5f / 32767.0f), -32767);
+
+	/* Rounding must never bias one way: symmetric input, symmetric output. */
+	for (int i = 1; i < 1000; i++) {
+		const float v = (float)i / 1000.0f;
+
+		zassert_equal(dsp::to_pcm16(v), -dsp::to_pcm16(-v),
+			      "rounding is asymmetric at %f", (double)v);
+	}
+}
+
 /* --- White noise ------------------------------------------------------- */
 
 ZTEST(dsp_primitives, test_white_noise)
@@ -492,4 +659,53 @@ ZTEST(dsp_primitives, test_white_noise)
 	}
 
 	zassert_true(varies, "noise should not be constant");
+}
+
+/*
+ * Left on its built-in constant the generator replays the same sequence from
+ * every power-up, so every hi-hat sounds identical boot to boot.
+ */
+ZTEST(dsp_primitives, test_white_noise_seed)
+{
+	dsp::WhiteNoise a;
+	dsp::WhiteNoise b;
+	dsp::WhiteNoise c;
+	int differences = 0;
+
+	a.set_amplitude(1.0f);
+	b.set_amplitude(1.0f);
+	c.set_amplitude(1.0f);
+
+	a.seed(1);
+	b.seed(2);
+	c.seed(1);
+
+	for (int i = 0; i < 1000; i++) {
+		const float from_a = a.next();
+
+		/* Same seed reproduces exactly, so tests stay deterministic. */
+		zassert_equal(from_a, c.next(), "the same seed must give the same sequence");
+
+		if (from_a != b.next()) {
+			differences++;
+		}
+	}
+
+	zassert_true(differences > 900, "different seeds should give different noise, %d/1000",
+		     differences);
+
+	/* Zero would lock xorshift up permanently. */
+	dsp::WhiteNoise zeroed;
+	bool nonzero = false;
+
+	zeroed.set_amplitude(1.0f);
+	zeroed.seed(0);
+
+	for (int i = 0; i < 100; i++) {
+		if (zeroed.next() != 0.0f) {
+			nonzero = true;
+		}
+	}
+
+	zassert_true(nonzero, "a zero seed must not stall the generator");
 }

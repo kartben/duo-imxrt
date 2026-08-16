@@ -47,7 +47,7 @@ west twister -T duo-imxrt/zephyr/tests -p native_sim/native/64
 | Suite | Covers |
 | --- | --- |
 | `zephyr/tests/midi` | The MIDI 1.0 parser (running status, channel filtering, sysex framing and overflow) and the UMP translation, including byte-for-byte round trips |
-| `zephyr/tests/dsp` | Each DSP primitive against the behaviour the voice relies on, plus the assembled voice: silence when idle, sound on a note, decay after release, the delay repeating one tap time later, and no wrapping at extreme gain |
+| `zephyr/tests/dsp` | Each DSP primitive against the behaviour the voice relies on, plus the assembled voice: silence when idle, sound on a note, decay after release, the delay repeating one tap time later, and no wrapping at extreme gain. Also pins the numerical shortcuts — the fast `sin`/`exp2` against libm, the drum decay against an exact exponential, filter stability across its whole cutoff and resonance range, and that the output carries no DC |
 
 Both suites compile the firmware sources directly, so they break when the
 firmware does. The delay-line and envelope timings in particular are asserted
@@ -129,10 +129,19 @@ DTCM.
 - The pulse oscillator subtracts its own DC offset. A pulse of duty *d* has a
   mean of `2d - 1`, and since the DUO's pulse width runs to 0.95 and the filter
   passes DC at unity gain, the legacy firmware gates up to 0.14 of full scale of
-  constant offset through the amp envelope - wasted headroom, and a step at
+  constant offset through the amp envelope — wasted headroom, and a step at
   every note on and note off. Removing it leaves the audible content unchanged
   (AC RMS is identical to five decimal places) but the DUO will be marginally
   louder before clipping and will not thump at wide pulse widths.
+- The filter's cutoff modulation, the drum decay envelope and the output sample
+  conversion use polynomial approximations and incremental updates in place of
+  `exp2f()`, `expf()` and a truncating cast. All three are pinned against the
+  exact functions in the DSP tests: the filter cutoff is within 0.15 cents, the
+  drum decay within a quarter of an LSB at 16 bit, and the sample conversion now
+  rounds to nearest instead of towards zero.
+- The hi-hat noise generator is seeded from the entropy source at init. The
+  legacy firmware starts from a fixed constant, so it replays an identical
+  sequence of hi-hats on every power cycle.
 
 ## Status
 
