@@ -47,6 +47,7 @@ west twister -T duo-imxrt/zephyr/tests -p native_sim/native/64
 | Suite | Covers |
 | --- | --- |
 | `zephyr/tests/midi` | The MIDI 1.0 parser (running status, channel filtering, sysex framing and overflow) and the UMP translation, including byte-for-byte round trips |
+| `zephyr/tests/tempo` | The internal clock generator: the TEMPO pot mapping, and that ticks neither drift over a minute nor jitter further than one poll interval, survive the microsecond counter's 32-bit wrap, and catch up after a late poll |
 | `zephyr/tests/dsp` | Each DSP primitive against the behaviour the voice relies on, plus the assembled voice: silence when idle, sound on a note, decay after release, the delay repeating one tap time later, and no wrapping at extreme gain. Also pins the numerical shortcuts — the fast `sin`/`exp2` against libm, the drum decay against an exact exponential, filter stability across its whole cutoff and resonance range, and that the output carries no DC |
 
 Both suites compile the firmware sources directly, so they break when the
@@ -71,6 +72,7 @@ Inside `zephyr/app/src`:
 | --- | --- |
 | `main.cpp` | Control loop, key handling, power management |
 | `globals.h`, `duo_synth.h`, `duo_drums.h`, `duo_leds.h`, `tempo.cpp` | Ports of the matching files under `brains2/apps/duo` |
+| `tempo_clock.cpp` | The clock generator's arithmetic, kept apart from `tempo.cpp` so it can be tested without the MIDI and sync transports |
 | `compat/` | Arduino-flavoured helpers and MIDI type definitions that the shared code expects |
 | `platform/` | Panel inputs, key matrix, LEDs, MIDI transports, sync jacks, power |
 | `platform/ump_convert.cpp` | MIDI 1.0 to Universal MIDI Packet translation, kept apart from the USB transport so it can be tested on the host |
@@ -151,6 +153,11 @@ DTCM.
   and within 0.13% of nominal across the pot. Long releases are therefore
   *shorter* than on the legacy firmware. This is the port's own constant; the
   legacy `AudioEffectCustomEnvelope` declares its own and is untouched.
+- The internal clock reads `micros()` rather than `millis()`. Its accumulator
+  was always in microseconds, so driving it from a millisecond clock pinned
+  every tick to a millisecond boundary — 0.83 ms of jitter at 120 BPM, exported
+  on the MIDI clock and the sync jack. The clock is also serviced on every pass
+  of the control loop instead of being skipped during the panel repaint.
 
 Measured and deliberately left alone: PolyBLEP aliasing on the oscillators is
 around −30 dB relative to the fundamental at the top of the DUO's range, but the
