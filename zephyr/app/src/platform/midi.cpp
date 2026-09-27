@@ -73,17 +73,21 @@ static void serial_write(const uint8_t *bytes, size_t len)
 	 * At 31250 baud a three byte message takes about a millisecond, so
 	 * transmission is interrupt driven; the audio and UI loops must not
 	 * block on it. If the buffer is full the message is dropped rather
-	 * than stalling the sequencer.
+	 * than stalling the sequencer - all of it, so that what goes out on
+	 * the wire is only ever whole messages. The main loop is the only
+	 * writer and the UART interrupt only frees space, so the space checked
+	 * here is still there when the message is put.
 	 */
 	if (!serial_ready) {
 		return;
 	}
 
-	uint32_t written = ring_buf_put(&uart_tx_rb, bytes, len);
-
-	if (written < len) {
-		LOG_WRN("MIDI TX buffer full, dropped %u bytes", (unsigned)(len - written));
+	if (ring_buf_space_get(&uart_tx_rb) < len) {
+		LOG_WRN("MIDI TX buffer full, dropped a %u byte message", (unsigned)len);
+		return;
 	}
+
+	ring_buf_put(&uart_tx_rb, bytes, len);
 
 	uart_irq_tx_enable(midi_uart);
 }
