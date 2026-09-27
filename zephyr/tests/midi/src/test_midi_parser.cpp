@@ -275,3 +275,133 @@ ZTEST(midi_parser, test_system_common_cancels_running_status)
 
 	zassert_equal(seen.note_on_count, 1, "only the first note should be decoded");
 }
+
+/* What the soft thru sends back out, one entry per message. */
+static struct {
+	unsigned count;
+	uint8_t bytes[512];
+	size_t len;
+	size_t lens[32];
+} thru;
+
+static void on_thru(const uint8_t *bytes, size_t len)
+{
+	zassert_true(thru.len + len <= sizeof(thru.bytes));
+	memcpy(&thru.bytes[thru.len], bytes, len);
+	thru.len += len;
+	if (thru.count < ARRAY_SIZE(thru.lens)) {
+		thru.lens[thru.count] = len;
+	}
+	thru.count++;
+}
+
+static void enable_thru(void)
+{
+	memset(&thru, 0, sizeof(thru));
+	parser.set_thru(on_thru);
+}
+
+/*
+ * Like the Arduino library's Thru::Full, every channel is passed on, not only
+ * the one the DUO listens to, and running status is expanded.
+ */
+ZTEST(midi_parser, test_thru_passes_all_channels_as_whole_messages)
+{
+	const uint8_t stream[] = {0x95, 0x3c, 0x40, 0x3e, 0x41, 0xb0, 0x07, 0x64};
+	const uint8_t expected[] = {0x95, 0x3c, 0x40, 0x95, 0x3e, 0x41, 0xb0, 0x07, 0x64};
+
+	enable_thru();
+	feed(stream, sizeof(stream), 1);
+
+	zassert_equal(thru.count, 3);
+	zassert_equal(thru.len, sizeof(expected));
+	zassert_mem_equal(thru.bytes, expected, sizeof(expected));
+	zassert_equal(seen.cc_count, 1, "the DUO still only reacts to its own channel");
+	zassert_equal(seen.note_on_count, 0);
+}
+
+/* Messages the DUO ignores still go through. */
+ZTEST(midi_parser, test_thru_passes_messages_the_duo_ignores)
+{
+	const uint8_t stream[] = {
+		0xc2, 0x05,             /* program change */
+		0xe0, 0x00, 0x40,       /* pitch bend */
+		0xf2, 0x10, 0x00,       /* song position */
+		0xf3, 0x02,             /* song select */
+		0xf1, 0x31,             /* MTC quarter frame */
+		0xf6,                   /* tune request */
+	};
+
+	enable_thru();
+	feed(stream, sizeof(stream), 1);
+
+	zassert_equal(thru.count, 6);
+	zassert_equal(thru.len, sizeof(stream));
+	zassert_mem_equal(thru.bytes, stream, sizeof(stream));
+}
+
+/* A real time byte inside a message is echoed on its own, and the message after it intact. */
+ZTEST(midi_parser, test_thru_realtime_inside_message)
+{
+	const uint8_t stream[] = {0x90, 0x3c, 0xf8, 0x40};
+	const uint8_t expected[] = {0xf8, 0x90, 0x3c, 0x40};
+
+	enable_thru();
+	feed(stream, sizeof(stream), 1);
+
+	zassert_equal(thru.count, 2);
+	zassert_equal(thru.lens[0], 1);
+	zassert_mem_equal(thru.bytes, expected, sizeof(expected));
+	zassert_equal(seen.clock_count, 1);
+	zassert_equal(seen.note_on_count, 1);
+}
+
+ZTEST(midi_parser, test_thru_sysex)
+{
+	const uint8_t stream[] = {0xf0, 0x7d, 0x64, 0x01, 0xf7};
+
+	enable_thru();
+	feed(stream, sizeof(stream), 1);
+
+	zassert_equal(thru.count, 1);
+	zassert_mem_equal(thru.bytes, stream, sizeof(stream));
+}
+
+/* A sysex that did not fit is not passed on in pieces. */
+ZTEST(midi_parser, test_thru_drops_oversized_sysex)
+{
+	enable_thru();
+
+	parser.feed(0xf0, 1);
+	for (unsigned i = 0; i < MidiParser::SYSEX_MAX; i++) {
+		parser.feed(0x01, 1);
+	}
+	parser.feed(0xf7, 1);
+
+	zassert_equal(thru.count, 0);
+}
+
+/* An unterminated sysex is not passed on either. */
+ZTEST(midi_parser, test_thru_drops_interrupted_sysex)
+{
+	const uint8_t stream[] = {0xf0, 0x7d, 0x64, 0x90, 0x3c, 0x40};
+	const uint8_t expected[] = {0x90, 0x3c, 0x40};
+
+	enable_thru();
+	feed(stream, sizeof(stream), 1);
+
+	zassert_equal(thru.count, 1);
+	zassert_mem_equal(thru.bytes, expected, sizeof(expected));
+}
+
+/* Without a handler nothing changes, which is how the USB side runs. */
+ZTEST(midi_parser, test_no_thru_by_default)
+{
+	const uint8_t stream[] = {0x90, 0x3c, 0x40};
+
+	memset(&thru, 0, sizeof(thru));
+	feed(stream, sizeof(stream), 1);
+
+	zassert_equal(thru.count, 0);
+	zassert_equal(seen.note_on_count, 1);
+}

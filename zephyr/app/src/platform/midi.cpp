@@ -6,6 +6,7 @@
  *
  * Like the legacy firmware, every outgoing message goes to both transports at
  * once - the DIN jacks on LPUART1 and USB - and both are polled for input.
+ * Whatever arrives on DIN is also echoed back out of it (soft thru).
  * On the USB side the Arduino USB-MIDI bridge is replaced by Zephyr's USB
  * MIDI 2.0 class, so MIDI 1.0 byte streams are translated to and from
  * Universal MIDI Packets here.
@@ -99,6 +100,13 @@ void init(const Callbacks &callbacks)
 {
 	serial_parser.set_callbacks(callbacks);
 	usb_parser.set_callbacks(callbacks);
+
+	/*
+	 * Soft thru from DIN in to DIN out, as the Arduino library does by
+	 * default for a serial port in the legacy firmware, so DUOs can be
+	 * chained. Its USB transport has thru off, and so does this one.
+	 */
+	serial_parser.set_thru(serial_write);
 
 	if (!device_is_ready(midi_uart)) {
 		LOG_ERR("MIDI UART not ready");
