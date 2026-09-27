@@ -72,7 +72,11 @@ ZTEST(duo_tempo, test_pot_is_monotonic)
 ZTEST(duo_tempo, test_tick_spacing_stays_close_to_nominal)
 {
 	const int tempos[] = {90, 120, 174, 200};
-	/* 100 us is the timebase resolution of micros() on this board. */
+	/*
+	 * micros() is exact on the DUO (it reads the cycle counter), so the
+	 * spacing is limited by how often the control loop polls; 100 us is
+	 * the kernel tick, a conservative stand-in for that.
+	 */
 	const uint32_t poll_us = 100;
 
 	for (int bpm : tempos) {

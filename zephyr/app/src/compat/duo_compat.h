@@ -31,7 +31,15 @@ static inline uint32_t millis(void)
 
 static inline uint32_t micros(void)
 {
+	/*
+	 * The kernel tick is 100 us, too coarse for the internal clock, which
+	 * is timed in microseconds; the 64-bit cycle counter is exact.
+	 */
+#if defined(CONFIG_TIMER_HAS_64BIT_CYCLE_COUNTER)
+	return (uint32_t)k_cyc_to_us_floor64(k_cycle_get_64());
+#else
 	return (uint32_t)(k_ticks_to_us_floor64(k_uptime_ticks()));
+#endif
 }
 
 static inline void delay(uint32_t ms)
