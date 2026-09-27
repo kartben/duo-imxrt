@@ -9,7 +9,7 @@ description: |
 
 compatible: "dato,duo-audio-path"
 
-include: base.yaml
+include: [base.yaml, pinctrl-device.yaml]
 
 properties:
   headphone-enable-gpios:
@@ -24,3 +24,15 @@ properties:
       Drives the speaker amplifier shutdown pin. Asserting this signal mutes
       the speaker; the line is released to a high-impedance input while muted
       so the amplifier's own pull-up holds it.
+
+      With mute-level-strap the flags' polarity is not used: the level that
+      mutes the amplifier is read from the board at start-up instead.
+
+  mute-level-strap:
+    type: boolean
+    description: |
+      The shutdown line is pulled to the amplifier's mute level by a resistor
+      on the board, because the amplifier fitted - and with it the level that
+      mutes it - varies. The firmware releases the line with the pad's
+      pull/keeper disabled (the "default" pinctrl state), reads the strap, and
+      from then on drives that level to mute and the opposite one to enable.

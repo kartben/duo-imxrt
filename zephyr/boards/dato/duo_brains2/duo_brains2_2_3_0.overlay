@@ -1,0 +1,33 @@
+/*
+ * Copyright (c) 2025 Dato Musical Instruments
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Brains 2.3. Different production runs are fitted with speaker amplifiers
+ * whose shutdown input mutes on opposite levels, so the board straps that line
+ * to the mute level with a resistor and the firmware reads the strap before
+ * driving it. Ported from brains2/core/boards/DUO_BRAINS_2.3/audio.cpp.
+ */
+
+&pinctrl {
+	/*
+	 * GPIO_AD_10 with the pad's pull/keeper disabled, so that while the
+	 * line is released the level read back is the strap's, not whatever
+	 * the keeper last latched.
+	 */
+	pinmux_amp_mute_sense: pinmux_amp_mute_sense {
+		group0 {
+			pinmux = <&iomuxc_gpio_ad_10_gpiomux_io24>;
+			bias-disable;
+			input-enable;
+			drive-strength = "r0-6";
+			slew-rate = "slow";
+			nxp,speed = "100-mhz";
+		};
+	};
+};
+
+&audio_path {
+	mute-level-strap;
+	pinctrl-0 = <&pinmux_amp_mute_sense>;
+	pinctrl-names = "default";
+};

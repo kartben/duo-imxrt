@@ -19,6 +19,7 @@ target_sources(app PRIVATE
 
   src/platform/FastLED.cpp
   src/platform/audio_path.cpp
+  src/platform/audio_path_pinctrl.c
   src/platform/keys.cpp
   src/platform/midi.cpp
   src/platform/mux_pinctrl.c
