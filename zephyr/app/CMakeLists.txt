@@ -8,6 +8,7 @@ project(duo_firmware LANGUAGES C CXX)
 
 target_sources(app PRIVATE
   src/main.cpp
+  src/scales.cpp
   src/tempo.cpp
   src/tempo_clock.cpp
 
