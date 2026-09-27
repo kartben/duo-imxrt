@@ -153,14 +153,29 @@ ZTEST(duo_scales, test_remap_leaves_foreign_notes)
 	zassert_equal(scale_remap(SCALES[DEFAULT_SCALE], SCALES[1], 50), 50);
 }
 
-ZTEST(duo_scales, test_remap_clamps_to_midi_range)
+/*
+ * Far from the root, a note's counterpart can fall outside MIDI. It stays put
+ * rather than being clamped: clamping onto note 0 would play a note that
+ * note_off() never releases, since it takes 0 to mean nothing is playing.
+ */
+ZTEST(duo_scales, test_remap_never_leaves_midi_range_or_lands_on_zero)
 {
-	int position;
+	const Scale &chromatic = SCALES[SCALE_COUNT - 1];
 
 	/* The top of MIDI in chromatic is far beyond it in a pentatonic. */
-	zassert_true(scale_position(SCALES[SCALE_COUNT - 1], 127, &position));
-	zassert_equal(scale_remap(SCALES[SCALE_COUNT - 1], SCALES[DEFAULT_SCALE], 127), 127);
-	zassert_equal(scale_remap(SCALES[SCALE_COUNT - 1], SCALES[DEFAULT_SCALE], 0), 0);
+	zassert_equal(scale_remap(chromatic, SCALES[DEFAULT_SCALE], 127), 127);
+	zassert_equal(scale_remap(chromatic, SCALES[DEFAULT_SCALE], 28), 28);
+
+	for (int from = 0; from < SCALE_COUNT; from++) {
+		for (int to = 0; to < SCALE_COUNT; to++) {
+			for (int note = 1; note < 128; note++) {
+				const uint8_t remapped = scale_remap(SCALES[from], SCALES[to], note);
+
+				zassert_true(remapped >= 1 && remapped <= 127, "%s -> %s: %d -> %d",
+					     SCALES[from].name, SCALES[to].name, note, remapped);
+			}
+		}
+	}
 }
 
 ZTEST(duo_scales, test_selection)

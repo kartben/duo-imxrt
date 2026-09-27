@@ -47,7 +47,8 @@ bool scale_position(const Scale &scale, int note, int *position);
 /*
  * The note that takes the place of `note` when switching from one scale to
  * another: the one at the same position, so that a pattern keeps its shape.
- * Notes that are not in `from` are left alone.
+ * Notes that are not in `from`, or whose counterpart would fall outside 1 to
+ * 127, are left alone.
  */
 uint8_t scale_remap(const Scale &from, const Scale &to, uint8_t note);
 

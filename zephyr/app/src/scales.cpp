@@ -62,11 +62,13 @@ uint8_t scale_remap(const Scale &from, const Scale &to, uint8_t note)
 
 	const int remapped = scale_note(to, position);
 
-	if (remapped < 0) {
-		return 0;
-	}
-	if (remapped > 127) {
-		return 127;
+	/*
+	 * Far from the root the scales drift apart by octaves. A note that
+	 * would land outside MIDI's range stays where it is; so does one that
+	 * would land on 0, which note_off() takes to mean no note is playing.
+	 */
+	if (remapped < 1 || remapped > 127) {
+		return note;
 	}
 
 	return (uint8_t)remapped;
