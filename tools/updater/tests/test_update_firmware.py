@@ -7,8 +7,11 @@ corrupted data rather than silently succeeding.
 
 import os
 import sys
+import types
 import unittest
 from unittest import mock
+
+from spsdk.mboot.exceptions import McuBootConnectionError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -21,11 +24,13 @@ SECTOR = duo_image.SECTOR_SIZE
 
 
 class FakeMcuBoot:
-    def __init__(self, fail=None, corrupt_at=None):
+    def __init__(self, fail=None, corrupt_at=None, short_read=False, disconnect_on=None):
         self.flash = bytearray(b"\x5a" * (64 * 1024))  # an old image, not erased
         self.calls = []
         self.fail = fail or set()
         self.corrupt_at = corrupt_at
+        self.short_read = short_read
+        self.disconnect_on = disconnect_on
         self.status_string = "OK"
 
     # McuBoot(interface) is used as a context manager
@@ -40,6 +45,11 @@ class FakeMcuBoot:
 
     def _ok(self, name):
         self.calls.append(name)
+        # Once the device has gone, it stays gone.
+        if name[0] == self.disconnect_on:
+            self.disconnect_on = "everything"
+        if self.disconnect_on == "everything":
+            raise McuBootConnectionError("device went away")
         if name[0] in self.fail:
             self.status_string = "kStatus_Fail"
             return False
@@ -76,9 +86,13 @@ class FakeMcuBoot:
         return True
 
     def read_memory(self, address, length, mem_id=0, progress_callback=None, fast_mode=False):
+        # Over USB HID, which is how the DUO is reached, spsdk reports a
+        # failed read as no data and a read cut short as a prefix.
         if not self._ok(("read", address, length)):
-            return None
+            return b""
         o = self._offset(address)
+        if self.short_read:
+            length //= 2
         return bytes(self.flash[o : o + length])
 
     def reset(self, timeout=2000, reopen=True):
@@ -104,8 +118,9 @@ class FlashImageTest(unittest.TestCase):
         self.image = duo_image.load_image(make_image("zephyr", size=0x5000))
 
     def flash(self, mcuboot, verify=True):
+        self.interface = types.SimpleNamespace(timeout=2000)
         with mock.patch.object(update_firmware, "McuBoot", mcuboot):
-            update_firmware.flash_image(object(), self.image, verify)
+            update_firmware.flash_image(self.interface, self.image, verify)
 
     def test_successful_update(self):
         fake = FakeMcuBoot()
@@ -144,15 +159,47 @@ class FlashImageTest(unittest.TestCase):
         )
 
     def assert_left_in_bootloader(self, fake):
-        self.assertNotIn("reset", fake.names())
-        self.assertNotIn(("write", duo_image.LOAD_ADDRESS, len(self.image.header())), fake.calls)
         self.assertFalse(fake.bootable())
+        # If it was reset, the boot header had been erased first.
+        if "reset" in fake.names():
+            invalidate = ("erase", duo_image.FLASH_BASE, duo_image.SECTOR_SIZE)
+            self.assertIn(invalidate, fake.calls)
+            self.assertLess(fake.calls.index(invalidate), fake.names().index("reset"))
 
-    def test_failed_write_leaves_the_duo_unbootable_and_does_not_reset(self):
+    def test_failed_write_leaves_the_duo_in_bootloader_mode(self):
         fake = FakeMcuBoot(fail={"write"})
 
         with self.assertRaisesRegex(update_firmware.UpdateError,
-                                    "(?s)Writing firmware failed.*not been marked bootable"):
+                                    "(?s)Writing firmware failed.*restarted in bootloader mode"):
+            self.flash(fake)
+
+        self.assertNotIn(("write", duo_image.LOAD_ADDRESS, len(self.image.header())), fake.calls)
+        self.assert_left_in_bootloader(fake)
+        self.assertIn("reset", fake.names())
+
+    def test_failed_header_write_erases_the_header_again(self):
+        # Everything else was written and verified; only the header is bad.
+        fake = FakeMcuBoot(corrupt_at=duo_image.LOAD_ADDRESS + 0x10)
+
+        with self.assertRaisesRegex(update_firmware.UpdateError, "Boot header does not match"):
+            self.flash(fake)
+
+        self.assert_left_in_bootloader(fake)
+        self.assertEqual(bytes(fake.flash[: duo_image.SECTOR_SIZE]), b"\xff" * duo_image.SECTOR_SIZE)
+
+    def test_lost_connection_is_an_update_error(self):
+        fake = FakeMcuBoot(disconnect_on="write")
+
+        with self.assertRaisesRegex(update_firmware.UpdateError, "(?s)device went away.*flashloader"):
+            self.flash(fake)
+
+        self.assertNotIn("reset", fake.names())
+        self.assertFalse(fake.bootable())
+
+    def test_short_read_back_is_an_error(self):
+        fake = FakeMcuBoot(short_read=True)
+
+        with self.assertRaisesRegex(update_firmware.UpdateError, "Reading back firmware failed"):
             self.flash(fake)
 
         self.assert_left_in_bootloader(fake)
@@ -179,26 +226,34 @@ class FlashImageTest(unittest.TestCase):
 
         self.assert_left_in_bootloader(fake)
 
-    def test_failed_erase_writes_nothing(self):
+    def test_failed_erase_writes_nothing_and_does_not_reset(self):
         fake = FakeMcuBoot(fail={"erase"})
 
-        with self.assertRaisesRegex(update_firmware.UpdateError, "Erasing"):
+        with self.assertRaisesRegex(update_firmware.UpdateError, "(?s)Erasing.*still in its flashloader"):
             self.flash(fake)
 
+        # The flash is in an unknown state, so the DUO must not be reset into it.
         self.assertNotIn("write", fake.names())
         self.assertNotIn("reset", fake.names())
+
+    def test_erase_gets_time_for_every_sector(self):
+        fake = FakeMcuBoot()
+        self.flash(fake)
+
+        sectors = -(-self.image.end_address // SECTOR) - duo_image.FLASH_BASE // SECTOR
+        self.assertGreaterEqual(self.interface.timeout, sectors * update_firmware.SECTOR_ERASE_MAX_MS)
+        self.assertGreaterEqual(self.interface.timeout, 2000)
 
     def test_unconfigured_flash_is_not_touched(self):
         fake = FakeMcuBoot(fail={"configure_memory"})
 
-        with self.assertRaisesRegex(update_firmware.UpdateError, "configure") as caught:
+        with self.assertRaisesRegex(update_firmware.UpdateError, "configure.*nothing was written"):
             self.flash(fake)
 
-        # Nothing was erased, so the DUO still has its old firmware.
-        self.assertNotIn("bootable", str(caught.exception))
-
+        # Nothing was erased, so it restarts into its old firmware.
         self.assertNotIn("erase", fake.names())
         self.assertEqual(bytes(fake.flash[:0x100]), b"\x5a" * 0x100)
+        self.assertEqual(fake.names()[-1], "reset")
 
     def test_silent_flashloader_is_not_touched(self):
         fake = FakeMcuBoot(fail={"get_property"})
@@ -252,19 +307,35 @@ class UpdateFlowTest(unittest.TestCase):
         self.image = duo_image.load_image(make_image(board=b"DUO_BRAINS_2.1"))
 
     def test_duo_already_in_bootloader_mode_is_flashed_without_asking(self):
-        with mock.patch.object(update_firmware, "find_sdp_interface", return_value=mock.Mock(product_name="SE Blank")), \
+        flashloader = object()
+        with mock.patch.object(update_firmware, "find_mboot_interface", side_effect=[None, flashloader]), \
+             mock.patch.object(update_firmware, "find_sdp_interface", return_value=mock.Mock(product_name="SE Blank")), \
              mock.patch.object(update_firmware, "enter_bootloader") as enter, \
-             mock.patch.object(update_firmware, "load_flashloader"), \
-             mock.patch.object(update_firmware, "_scan", return_value=object()), \
+             mock.patch.object(update_firmware, "load_flashloader") as load, \
              mock.patch.object(update_firmware, "flash_image") as flash, \
              mock.patch("builtins.input", side_effect=AssertionError("prompted")):
             self.assertTrue(update_firmware.update_firmware(self.image, "data", True))
 
         enter.assert_not_called()
-        flash.assert_called_once()
+        load.assert_called_once()
+        flash.assert_called_once_with(flashloader, self.image, True)
+
+    def test_flashloader_left_running_is_picked_up(self):
+        flashloader = object()
+        with mock.patch.object(update_firmware, "find_mboot_interface", return_value=flashloader), \
+             mock.patch.object(update_firmware, "find_sdp_interface") as sdp, \
+             mock.patch.object(update_firmware, "load_flashloader") as load, \
+             mock.patch.object(update_firmware, "flash_image") as flash, \
+             mock.patch("builtins.input", side_effect=AssertionError("prompted")):
+            self.assertTrue(update_firmware.update_firmware(self.image, "data", True))
+
+        sdp.assert_not_called()
+        load.assert_not_called()
+        flash.assert_called_once_with(flashloader, self.image, True)
 
     def test_failure_is_reported_not_raised(self):
-        with mock.patch.object(update_firmware, "find_sdp_interface", return_value=mock.Mock(product_name="SE Blank")), \
+        with mock.patch.object(update_firmware, "find_mboot_interface", return_value=None), \
+             mock.patch.object(update_firmware, "find_sdp_interface", return_value=mock.Mock(product_name="SE Blank")), \
              mock.patch.object(update_firmware, "load_flashloader",
                                side_effect=update_firmware.UpdateError("Could not send the flashloader")), \
              mock.patch.object(update_firmware, "flash_image") as flash:
@@ -272,14 +343,21 @@ class UpdateFlowTest(unittest.TestCase):
 
         flash.assert_not_called()
 
+    def test_lost_connection_is_reported_not_raised(self):
+        with mock.patch.object(update_firmware, "find_mboot_interface", return_value=None), \
+             mock.patch.object(update_firmware, "find_sdp_interface", return_value=mock.Mock(product_name="SE Blank")), \
+             mock.patch.object(update_firmware, "load_flashloader",
+                               side_effect=McuBootConnectionError("unplugged")):
+            self.assertFalse(update_firmware.update_firmware(self.image, "data", False))
+
     def test_board_mismatch_stops_before_rebooting_the_duo(self):
-        with mock.patch.object(update_firmware, "find_sdp_interface", return_value=None), \
+        with mock.patch.object(update_firmware, "find_mboot_interface", return_value=None), \
+             mock.patch.object(update_firmware, "find_sdp_interface", return_value=None), \
              mock.patch.object(update_firmware, "get_firmware_info", return_value=info("DUO_BRAINS_2.3")), \
              mock.patch.object(update_firmware, "enter_bootloader") as enter:
             self.assertFalse(update_firmware.update_firmware(self.image, "data", False))
 
         enter.assert_not_called()
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -71,10 +71,12 @@ data, vector table, size) and that it is built for the board revision the DUO
 reports, before it reboots anything. It then erases, writes and reads back
 everything from the image vector table onwards, and only then writes and
 verifies the boot header. Until that last step the flash holds no valid boot
-header, so if the update is interrupted or anything fails to verify, the boot
-ROM falls back to the USB serial downloader on the next power-up and the update
-can simply be run again — the updater notices a DUO already in the serial
-downloader and carries on without asking.
+header, so if the update is interrupted the boot ROM falls back to the USB
+serial downloader on the next power-up. If a step fails to write or verify,
+the updater erases the boot header again and restarts the DUO into the serial
+downloader (or, if even that fails, leaves NXP's flashloader running). Either
+way the update can simply be run again: the updater notices a DUO in the serial
+downloader or the flashloader and carries on without asking.
 
 **If the new firmware does not come up** — no sound, no LEDs, or not visible
 over USB MIDI so the updater cannot reboot it — switch the DUO off, hold

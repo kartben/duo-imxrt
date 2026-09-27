@@ -10,6 +10,7 @@ from spsdk.sdp import SDP
 import spsdk.sdp.interfaces.usb as sdp_usb
 import spsdk.mboot.interfaces.usb as mboot_usb
 from spsdk.mboot import McuBoot
+from spsdk.exceptions import SPSDKError
 from firmware_info import get_firmware_info, print_firmware_info
 import duo_image
 from duo_image import ImageError
@@ -21,6 +22,12 @@ FLASHLOADER_ADDRESS = 0x20205800
 
 # How long the DUO gets to re-enumerate after each reboot.
 ENUMERATION_TIMEOUT_S = 10
+
+# How long the flashloader may take to answer a command. spsdk's default of
+# 2 s is short for an erase: a W25Q sector erase is 45 ms typical and 400 ms
+# at worst, so allow the worst case for every sector the image covers.
+FLASHLOADER_TIMEOUT_MS = 5000
+SECTOR_ERASE_MAX_MS = 400
 
 
 class UpdateError(Exception):
@@ -58,6 +65,10 @@ def _scan(scan, usb_id):
 
 def find_sdp_interface():
     return _scan(sdp_usb.scan_usb, SDP_USB_ID)
+
+
+def find_mboot_interface():
+    return _scan(mboot_usb.scan_usb, MBOOT_USB_ID)
 
 
 def wait_for(find, what, timeout=ENUMERATION_TIMEOUT_S):
@@ -126,16 +137,43 @@ def write_and_verify(mboot, address, data, what, verify):
 
     print(f"Verifying {what} ... ", end="", flush=True)
     readback = mboot.read_memory(address, len(data))
+    # Over USB HID spsdk reports a failed read as empty or cut-short data
+    # rather than None.
+    if not readback or len(readback) != len(data):
+        print("failed")
+        raise UpdateError(f"Reading back {what} failed ({mboot.status_string}).")
     if readback != data:
         print("failed")
-        if readback is None:
-            raise UpdateError(f"Reading back {what} failed ({mboot.status_string}).")
-        first = next(i for i in range(min(len(data), len(readback))) if readback[i] != data[i])
+        first = next(i for i in range(len(data)) if readback[i] != data[i])
         raise UpdateError(f"{what.capitalize()} does not match the image, first at 0x{address + first:08x}.")
     print("done")
 
 
+def abandon(mboot):
+    """After a failed write, makes sure the DUO cannot boot what is in flash.
+
+    Erasing the first sector removes the boot header, whatever state the rest
+    of the flash is in, so the reset that follows lands in the serial
+    downloader. If even that fails the flashloader is left running, which the
+    next run of the updater picks up.
+    """
+    try:
+        if mboot.flash_erase_region(duo_image.FLASH_BASE, duo_image.SECTOR_SIZE):
+            mboot.reset(reopen=False)
+            return ("The DUO has no boot header now and has restarted in bootloader mode; "
+                    "run the updater again.")
+    except SPSDKError:
+        pass
+    return ("The DUO is still in its flashloader with an incomplete image; run the updater "
+            "again, which carries on from there.")
+
+
 def flash_image(boot_interface, image, verify):
+    start = duo_image.FLASH_BASE
+    end = -(-image.end_address // duo_image.SECTOR_SIZE) * duo_image.SECTOR_SIZE
+    sectors = (end - start) // duo_image.SECTOR_SIZE
+    boot_interface.timeout = max(FLASHLOADER_TIMEOUT_MS, sectors * SECTOR_ERASE_MAX_MS)
+
     with McuBoot(boot_interface) as mboot:
         if mboot.get_property(1, 0) is None:
             raise UpdateError("The flashloader is not responding.")
@@ -145,10 +183,10 @@ def flash_image(boot_interface, image, verify):
         if not (mboot.fill_memory(0x20202000, 4, 0xC0000007)
                 and mboot.fill_memory(0x20202004, 4, 0)
                 and mboot.configure_memory(0x20202000, 9)):
-            raise UpdateError(f"Could not configure the flash ({mboot.status_string}).")
-
-        start = duo_image.FLASH_BASE
-        end = -(-image.end_address // duo_image.SECTOR_SIZE) * duo_image.SECTOR_SIZE
+            status = mboot.status_string
+            # Nothing has been written, so the old firmware is still there.
+            mboot.reset(reopen=False)
+            raise UpdateError(f"Could not configure the flash ({status}); nothing was written.")
 
         # From here until the header is written back the DUO has no valid
         # boot header, so if anything goes wrong it comes back up in the
@@ -165,49 +203,59 @@ def flash_image(boot_interface, image, verify):
             # The boot header goes last: only a complete, verified image is
             # ever marked bootable.
             write_and_verify(mboot, duo_image.LOAD_ADDRESS, image.header(), "boot header", verify)
-        except UpdateError as e:
-            raise UpdateError(
-                f"{e}\nThe DUO has not been marked bootable, so it will start up in "
-                "bootloader mode; run the updater again."
-            ) from e
+        except (UpdateError, SPSDKError) as e:
+            raise UpdateError(f"{e}\n{abandon(mboot)}") from e
 
         print("Resetting")
         if not mboot.reset(reopen=False):
             print("The DUO did not reset; switch it off and on again to start the new firmware.")
 
 
+def reach_flashloader(image, data_path, interactive, skip_enter_bootloader, force):
+    """Gets the DUO into NXP's flashloader, returning its USB interface."""
+    boot_interface = find_mboot_interface()
+    if boot_interface is not None:
+        print("DUO is already running the flashloader (from an earlier attempt); carrying on")
+        return boot_interface
+
+    if find_sdp_interface() is not None:
+        print("DUO is already in bootloader mode")
+    elif not skip_enter_bootloader:
+        info = get_firmware_info()
+        print_firmware_info(info)
+        check_board(image, info, interactive, force)
+
+        if not enter_bootloader():
+            if interactive:
+                input("Please enter bootloader manually, then press Enter.")
+            else:
+                print("Continuing. [Continuous mode]")
+    else:
+        print("not entering bootloader as skip_enter_bootloader is set")
+
+    try:
+        interface = wait_for(find_sdp_interface, "SDP host mode")
+    except UpdateError as e:
+        raise UpdateError(
+            f"{e} A DUO running the Zephyr firmware can be put in bootloader mode by "
+            "switching it on while holding both arrow buttons."
+        ) from e
+    print(f"Found {interface.product_name}")
+
+    load_flashloader(interface, data_path)
+
+    print("Sent flashloader. Rebooting.")
+    return wait_for(find_mboot_interface, "MBOOT mode")
+
+
 def update_firmware(image, data_path, interactive, skip_enter_bootloader=False, verify=True, force=False):
     try:
-        if find_sdp_interface() is not None:
-            print("DUO is already in bootloader mode")
-        elif not skip_enter_bootloader:
-            info = get_firmware_info()
-            print_firmware_info(info)
-            check_board(image, info, interactive, force)
-
-            if not enter_bootloader():
-                if interactive:
-                    input("Please enter bootloader manually, then press Enter.")
-                else:
-                    print("Continuing. [Continuous mode]")
-        else:
-            print("not entering bootloader as skip_enter_bootloader is set")
-
-        try:
-            interface = wait_for(find_sdp_interface, "SDP host mode")
-        except UpdateError as e:
-            raise UpdateError(
-                f"{e} A DUO running the Zephyr firmware can be put in bootloader mode by "
-                "switching it on while holding both arrow buttons."
-            ) from e
-        print(f"Found {interface.product_name}")
-
-        load_flashloader(interface, data_path)
-
-        print("Sent flashloader. Rebooting.")
-        boot_interface = wait_for(lambda: _scan(mboot_usb.scan_usb, MBOOT_USB_ID), "MBOOT mode")
-
+        boot_interface = reach_flashloader(image, data_path, interactive, skip_enter_bootloader, force)
         flash_image(boot_interface, image, verify)
+    except SPSDKError as e:
+        print(f"Lost contact with the DUO: {e}")
+        print("Run the updater again; if the DUO does not respond, switch it off and on.")
+        return False
     except UpdateError as e:
         print(e)
         return False
