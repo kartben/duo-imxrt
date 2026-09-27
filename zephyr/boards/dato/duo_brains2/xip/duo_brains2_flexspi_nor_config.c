@@ -5,7 +5,9 @@
  * FlexSPI boot configuration block for the Winbond W25Q-series QSPI NOR the
  * Brains 2 boots from. Transcribed from the MCUXpresso-SDK firmware in
  * brains2/sdk/xip/duobrains2_flexspi_nor_config.c so that both firmwares
- * present the boot ROM with identical flash parameters.
+ * present the boot ROM with identical flash parameters: the 512 bytes this
+ * produces are byte for byte the ones the legacy firmware writes, which is the
+ * configuration DUOs in the field have been booting from.
  */
 
 #include <zephyr/kernel.h>
@@ -36,9 +38,17 @@ const struct flexspi_nor_config_t duo_brains2_flash_config = {
 			[4 * 1 + 0] = FLEXSPI_LUT_SEQ(CMD_SDR, FLEXSPI_1PAD, 0x05,
 						      READ_SDR, FLEXSPI_1PAD, 0x02),
 
+			/* 2: Read status register 2 (unused by the boot ROM) */
+			[4 * 2 + 0] = FLEXSPI_LUT_SEQ(CMD_SDR, FLEXSPI_1PAD, 0x35,
+						      DUMMY_SDR, FLEXSPI_1PAD, 0x08),
+
 			/* 3: Write enable */
 			[4 * 3 + 0] = FLEXSPI_LUT_SEQ(CMD_SDR, FLEXSPI_1PAD, 0x06,
 						      STOP, FLEXSPI_1PAD, 0x0),
+
+			/* 4: Write status register (unused by the boot ROM) */
+			[4 * 4 + 0] = FLEXSPI_LUT_SEQ(CMD_SDR, FLEXSPI_1PAD, 0x01,
+						      WRITE_SDR, FLEXSPI_1PAD, 0x01),
 
 			/* 5: Erase sector (4 KiB) */
 			[4 * 5 + 0] = FLEXSPI_LUT_SEQ(CMD_SDR, FLEXSPI_1PAD, 0x20,
@@ -61,7 +71,6 @@ const struct flexspi_nor_config_t duo_brains2_flash_config = {
 	},
 	.page_size = 256u,
 	.sector_size = 4u * 1024u,
-	.ipcmd_serial_clk_freq = 1u,
 	.block_size = 64u * 1024u,
 	.is_uniform_block_size = false,
 };
