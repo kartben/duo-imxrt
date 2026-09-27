@@ -24,26 +24,19 @@ LOG_MODULE_REGISTER(duo_keys, CONFIG_DUO_LOG_LEVEL);
 
 BUILD_ASSERT(DT_NODE_HAS_STATUS(KEYS_NODE, okay), "keys node is missing");
 
-static const uint8_t ROWS = DT_PROP_LEN(KEYS_NODE, row_gpios);
-static const uint8_t COLS = DT_PROP_LEN(KEYS_NODE, col_gpios);
+static const uint8_t ROWS = KEY_ROWS;
+static const uint8_t COLS = KEY_COLS;
 
-BUILD_ASSERT(DT_PROP_LEN(KEYS_NODE, row_gpios) == 4, "unexpected matrix geometry");
-BUILD_ASSERT(DT_PROP_LEN(KEYS_NODE, col_gpios) == 6, "unexpected matrix geometry");
+BUILD_ASSERT(DT_PROP_LEN(KEYS_NODE, row_gpios) == KEY_ROWS, "unexpected matrix geometry");
+BUILD_ASSERT(DT_PROP_LEN(KEYS_NODE, col_gpios) == KEY_COLS, "unexpected matrix geometry");
 
 /* Time a button must be held before it reports HOLD, as in the legacy firmware. */
 static const uint32_t HOLD_TIME_MS = 2000;
 
-/* Matrix wiring of the Brains 2.1 panel (SEQ_1_2 layout). */
-static const Button keymap[4][6] = {
-	{ BTN_SEQ1,  STEP_8,    STEP_1, BTN_SEQ2, STEP_7, STEP_6 },
-	{ DUMMY_KEY, SEQ_START, STEP_2, STEP_3,   STEP_4, STEP_5 },
-	{ KEYB_0,    BTN_DOWN,  KEYB_2, KEYB_1,   KEYB_4, KEYB_3 },
-	{ KEYB_6,    KEYB_5,    KEYB_8, KEYB_7,   BTN_UP, KEYB_9 },
-};
-
 /* The play button doubles as the power button. */
-static const uint8_t POWER_ROW = 1;
-static const uint8_t POWER_COL = 1;
+static constexpr KeyPosition POWER_KEY = key_position(SEQ_START);
+static const uint8_t POWER_ROW = POWER_KEY.row;
+static const uint8_t POWER_COL = POWER_KEY.col;
 
 struct key_event {
 	uint8_t row;
@@ -90,7 +83,7 @@ INPUT_CALLBACK_DEFINE(DEVICE_DT_GET(KEYS_NODE), input_cb, NULL);
 
 static void dispatch(uint8_t row, uint8_t col, KeyState state)
 {
-	const Button key = keymap[row][col];
+	const Button key = KEYMAP[row][col];
 
 	if (key == DUMMY_KEY || key_handler == nullptr) {
 		return;

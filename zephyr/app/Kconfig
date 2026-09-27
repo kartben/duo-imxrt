@@ -10,6 +10,17 @@ config DUO_DEV_MODE
 	  the serial downloader, so the firmware can be reflashed without
 	  opening the enclosure. Equivalent to DEV_MODE in the legacy firmware.
 
+config DUO_REBOOT_ON_FATAL_ERROR
+	bool "Reboot on a fatal error"
+	default y
+	help
+	  Reboot the DUO when the firmware faults, rather than halting it with
+	  the panel frozen and nothing on USB. Even if the fault recurs on
+	  every boot, holding both arrow buttons while the DUO comes up still
+	  reaches the serial downloader, since that check runs before any of
+	  the drivers that could fail (see src/platform/recovery.cpp). Turn it
+	  off to inspect a fault with a debugger.
+
 config DUO_AUDIO_BLOCK_FRAMES
 	int "Audio block size in stereo frames"
 	default 128

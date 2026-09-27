@@ -2,11 +2,26 @@
  * Copyright (c) 2025 Dato Musical Instruments
  * SPDX-License-Identifier: Apache-2.0
  *
- * USB MIDI function exposed by the firmware. This is an application-level
- * choice rather than a property of the board, so it lives here.
+ * USB MIDI function exposed by the firmware, and the LEDs the recovery path
+ * lights. These are application-level choices rather than properties of the
+ * board, so they live here.
  */
 
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
 / {
+	zephyr,user {
+		/*
+		 * The oscillator, filter and envelope indicator LEDs, driven
+		 * as plain GPIOs (they are active low) to show that the DUO
+		 * has gone into the serial downloader on the power-on
+		 * recovery combination; see src/platform/recovery.cpp.
+		 */
+		recovery-led-gpios = <&gpio1 8 GPIO_ACTIVE_LOW>,
+				     <&gpio1 5 GPIO_ACTIVE_LOW>,
+				     <&gpio1 3 GPIO_ACTIVE_LOW>;
+	};
+
 	usb_midi: usb_midi {
 		compatible = "zephyr,midi2-device";
 		status = "okay";

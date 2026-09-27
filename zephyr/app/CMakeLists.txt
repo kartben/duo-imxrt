@@ -27,6 +27,7 @@ target_sources(app PRIVATE
   src/platform/panel_leds.cpp
   src/platform/pins.cpp
   src/platform/power.cpp
+  src/platform/recovery.cpp
   src/platform/sync.cpp
   src/platform/ump_convert.cpp
   src/platform/usb_midi.cpp
