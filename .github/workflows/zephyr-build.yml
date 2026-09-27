@@ -5,12 +5,14 @@ on:
     paths:
       - 'zephyr/**'
       - 'shared/**'
+      - 'tools/updater/duo_image.py'
       - 'west.yml'
       - '.github/workflows/zephyr-build.yml'
   pull_request:
     paths:
       - 'zephyr/**'
       - 'shared/**'
+      - 'tools/updater/duo_image.py'
       - 'west.yml'
       - '.github/workflows/zephyr-build.yml'
   workflow_dispatch:
@@ -61,10 +63,17 @@ jobs:
       matrix:
         variant:
           - name: release
+            board: duo_brains2
             args: ''
+            artifact: duo-brains2.1-zephyr
+          - name: release-brains-2.3
+            board: duo_brains2@2.3.0
+            args: ''
+            artifact: duo-brains2.3-zephyr
           # The long-press-to-bootloader path is compiled out of the release
           # build, so build it here too rather than letting it rot.
           - name: dev-mode
+            board: duo_brains2
             args: '-DCONFIG_DUO_DEV_MODE=y'
 
     steps:
@@ -83,7 +92,7 @@ jobs:
 
       - name: Build firmware
         run: |
-          west build -p always -b duo_brains2 \
+          west build -p always -b ${{ matrix.variant.board }} \
             -d build/${{ matrix.variant.name }} \
             duo-imxrt/zephyr/app \
             -- ${{ matrix.variant.args }}
@@ -93,13 +102,15 @@ jobs:
           west build -d build/${{ matrix.variant.name }} -t ram_report
           west build -d build/${{ matrix.variant.name }} -t rom_report
 
+      # duo_firmware.bin is the file to give the updater: the build has
+      # already put it in the updater's layout and checked that it boots.
       - name: Upload firmware
-        if: matrix.variant.name == 'release'
+        if: matrix.variant.artifact
         uses: actions/upload-artifact@v4
         with:
-          name: duo-brains2-zephyr
+          name: ${{ matrix.variant.artifact }}
           path: |
-            build/release/zephyr/zephyr.elf
-            build/release/zephyr/zephyr.bin
-            build/release/zephyr/zephyr.hex
+            build/${{ matrix.variant.name }}/zephyr/duo_firmware.bin
+            build/${{ matrix.variant.name }}/zephyr/zephyr.elf
+            build/${{ matrix.variant.name }}/zephyr/zephyr.bin
           if-no-files-found: error

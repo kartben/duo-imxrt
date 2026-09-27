@@ -31,7 +31,7 @@ If you get an error along the lines of `Cannot find source file: /duo-imxrt/brai
 If the build is successful you can upload it by running `../script/send_firmware.sh duo`. You will need all correct python libraries as well so make sure you followed the instruction at "Updating the firmware" to install them.
 
 ## Zephyr port
-There is a parallel implementation of the Brains 2 firmware on top of the Zephyr RTOS in `zephyr/`, including a board definition for the Brains 2.1 hardware. It is built with `west` rather than the build script above, and is not yet validated on hardware. See [zephyr/README.md](zephyr/README.md).
+There is a parallel implementation of the Brains 2 firmware on top of the Zephyr RTOS in `zephyr/`, including a board definition for the Brains 2.1 and 2.3 hardware. It is built with `west` rather than the build script above, flashed with the same updater (use `duo_firmware.bin` from the build), and is not yet validated on hardware. See [zephyr/README.md](zephyr/README.md), which also explains how to get a DUO back into bootloader mode if a build does not come up.
 
 ## DUO Brains revisions
 The main pcb of the Dato DUO is dubbed Brains. Up until mid 2022 the Brains 1 were based on the NXP K20DX256 microcontroller. Due to ongoing problems with availability of that chip family later Brains 2 are based on NXP iMX RT1010

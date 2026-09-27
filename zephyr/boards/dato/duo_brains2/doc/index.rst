@@ -4,8 +4,9 @@ Overview
 ********
 
 Brains 2 is the main board of the `Dato DUO`_ synthesizer, built around an NXP
-i.MX RT1011 (Cortex-M7 at 500 MHz) booting execute-in-place from a 16 Mbit QSPI
-NOR flash. This board definition describes revision 2.1.
+i.MX RT1011 (Cortex-M7 at 500 MHz) booting execute-in-place from a 128 Mbit QSPI
+NOR flash. This board definition describes revisions 2.1 (the default) and
+2.3; build for the latter with ``-b duo_brains2@2.3.0``.
 
 The DUO is a self-contained instrument, so the board carries the whole
 instrument rather than a set of expansion headers:
@@ -101,8 +102,20 @@ Programming and Debugging
 
 The DUO has no debug connector fitted in production. Firmware is normally
 updated through the i.MX RT serial downloader over USB, which the updater in
-``tools/updater`` speaks; hold the play button on a firmware built with
-``CONFIG_DUO_DEV_MODE=y`` to reboot into it.
+``tools/updater`` speaks. Give it ``build/zephyr/duo_firmware.bin``, which the
+build produces alongside ``zephyr.bin``: the updater writes images starting at
+the FlexSPI configuration block, 1 KiB into flash, and ``zephyr.bin`` starts at
+the beginning of flash. The build checks the image the same way the updater
+does before producing it.
+
+The updater reboots the DUO into the serial downloader with a MIDI sysex
+message. Other ways in, which do not need the firmware to be working:
+
+- Hold both arrow buttons while the DUO switches on (checked by the firmware in
+  ``zephyr/app`` before the USB, audio and LED drivers start).
+- Hold the play button on a firmware built with ``CONFIG_DUO_DEV_MODE=y``.
+- An interrupted update: the updater writes the boot header last, so the boot
+  ROM finds none and falls back to the serial downloader by itself.
 
 With a SWD probe attached to the debug pads, the usual runners work:
 
