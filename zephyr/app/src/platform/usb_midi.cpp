@@ -31,6 +31,11 @@
 #include <zephyr/usb/class/usbd_midi2.h>
 #include <zephyr/usb/usbd.h>
 
+/* lib/midi2 declares its functions without C++ linkage guards. */
+extern "C" {
+#include <ump_stream_responder.h>
+}
+
 LOG_MODULE_REGISTER(duo_usb_midi, CONFIG_DUO_LOG_LEVEL);
 
 #define USB_MIDI_NODE DT_NODELABEL(usb_midi)
@@ -96,11 +101,55 @@ static void push_rx(const uint8_t *bytes, size_t len)
 	}
 }
 
+/*
+ * usbd_midi_send() queues without locking, and there are two senders: the
+ * control loop, and the discovery replies below, which go out from the system
+ * workqueue that delivers received packets.
+ */
+K_MUTEX_DEFINE(usb_tx_lock);
+
+static void send_stream_reply(const void *dev, const struct midi_ump packet)
+{
+	k_mutex_lock(&usb_tx_lock, K_FOREVER);
+	usbd_midi_send(static_cast<const struct device *>(dev), packet);
+	k_mutex_unlock(&usb_tx_lock);
+}
+
+/*
+ * Hosts that speak MIDI 2.0 name the endpoint and its port from UMP Stream
+ * discovery replies. Zephyr's class leaves the Group Terminal Block descriptor
+ * unnamed, so without them Linux lists the port as "Group 1 (Group 1-1)". The
+ * names are the labels on the usb_midi node in app.overlay.
+ */
+static const struct ump_endpoint_dt_spec ump_endpoint = UMP_ENDPOINT_DT_SPEC_GET(USB_MIDI_NODE);
+
+static const struct ump_stream_responder_cfg stream_responder =
+	UMP_STREAM_RESPONDER(DEVICE_DT_GET(USB_MIDI_NODE), send_stream_reply, &ump_endpoint);
+
+static void respond_to_stream(struct midi_ump packet)
+{
+	/*
+	 * The responder would report a Product Instance ID made up from
+	 * hwinfo. Without one, hosts identify the DUO by its USB serial
+	 * number, which is the legacy firmware's.
+	 */
+	if (UMP_STREAM_STATUS(packet) == UMP_STREAM_STATUS_EP_DISCOVERY) {
+		packet.data[1] &= ~UMP_EP_DISC_FILTER_PRODUCT_ID;
+	}
+
+	ump_stream_respond(&stream_responder, packet);
+}
+
 static void on_ump_received(const struct device *dev, const struct midi_ump packet)
 {
 	uint8_t bytes[ump::MAX_MIDI1_BYTES];
 
 	ARG_UNUSED(dev);
+
+	if (UMP_MT(packet) == UMP_MT_UMP_STREAM) {
+		respond_to_stream(packet);
+		return;
+	}
 
 	const size_t len = ump::to_midi1(packet, rx_state, bytes, sizeof(bytes));
 
@@ -144,7 +193,9 @@ void usb_midi_send_bytes(const uint8_t *bytes, size_t len)
 		return;
 	}
 
+	k_mutex_lock(&usb_tx_lock, K_FOREVER);
 	ump::from_midi1(bytes, len, send_packet, NULL);
+	k_mutex_unlock(&usb_tx_lock);
 }
 
 void usb_midi_disconnect(void)
