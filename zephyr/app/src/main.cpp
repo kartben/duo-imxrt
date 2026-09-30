@@ -87,6 +87,19 @@ static void change_scale(uint8_t index)
 }
 
 #include "duo_drums.h"
+#include "held_notes.h"
+
+/*
+ * Duophonic mode, off unless picked: hold double speed while switching on, or
+ * send CC 127 (Poly Mode On; CC 126, Mono Mode On, leaves it). While the
+ * sequencer is stopped and two or more notes are held, the lowest plays on the
+ * pulse oscillator and the highest on the saw, instead of the last one played
+ * on both. They share the filter and the envelopes, so as on the classic
+ * duophonic synths a new note retriggers both. The sequencer itself, and what
+ * the DUO sends over MIDI, stay monophonic.
+ */
+static bool duophonic;
+static duo::HeldNotes held_notes;
 
 /*
  * CC 3, which the MIDI specification leaves undefined and the DUO does not
@@ -103,6 +116,11 @@ static const uint8_t SCALE_SELECT_CC = 3;
 static const uint8_t KICK_SOUND_CC = 14;
 static const uint8_t HAT_SOUND_CC = 15;
 
+/* Channel mode messages from the MIDI specification. */
+static const uint8_t ALL_NOTES_OFF_CC = 123;
+static const uint8_t MONO_MODE_ON_CC = 126;
+static const uint8_t POLY_MODE_ON_CC = 127;
+
 static void midi_handle_control_change(uint8_t channel, uint8_t number, uint8_t value)
 {
 	if (channel == MIDI_CHANNEL) {
@@ -116,10 +134,34 @@ static void midi_handle_control_change(uint8_t channel, uint8_t number, uint8_t 
 		case HAT_SOUND_CC:
 			Drums::select_hat_sound(value * duo::PAD_SOUNDS / 128);
 			return;
+		case MONO_MODE_ON_CC:
+		case POLY_MODE_ON_CC:
+			duophonic = number == POLY_MODE_ON_CC;
+			/* The specification has both act as All Notes Off as well. */
+			held_notes.release_all();
+			midi_handle_cc(channel, ALL_NOTES_OFF_CC, 0);
+			return;
+		case ALL_NOTES_OFF_CC:
+			/* The sequencer lets go of every note; so does duophonic mode. */
+			held_notes.release_all();
+			break;
 		}
 	}
 
 	midi_handle_cc(channel, number, value);
+}
+
+/* MIDI notes count towards duophonic mode's pair, as keys do. */
+static void midi_hold_note(byte channel, byte note, byte velocity)
+{
+	held_notes.press(note);
+	midi_note_on(channel, note, velocity);
+}
+
+static void midi_let_go_of_note(byte channel, byte note, byte velocity)
+{
+	held_notes.release(note);
+	midi_note_off(channel, note, velocity);
 }
 
 /*
@@ -173,8 +215,8 @@ static void midi_handle_port_sysex(byte *data, unsigned length)
 
 static void midi_init()
 {
-	MIDI::init(MIDI::Callbacks{.note_on = midi_note_on,
-				   .note_off = midi_note_off,
+	MIDI::init(MIDI::Callbacks{.note_on = midi_hold_note,
+				   .note_off = midi_let_go_of_note,
 				   .clock = midi_handle_clock,
 				   .start = sequencer_start_from_MIDI,
 				   .cont = sequencer_start_from_MIDI,
@@ -203,6 +245,30 @@ static uint8_t note_is_playing = 0;
 static const uint8_t NO_NOTE = 0;
 static uint8_t key_note[duo::KEYBOARD_KEYS];
 
+/*
+ * In duophonic mode, with the sequencer stopped and two or more notes held,
+ * moves the pulse oscillator to the lowest held note and gives the highest to
+ * the saw. Otherwise the pulse keeps `pulse_note` and the saw follows it.
+ */
+static void pick_duophonic_notes(uint8_t *pulse_note)
+{
+	uint8_t lowest;
+	uint8_t highest;
+
+	if (!duophonic || sequencer.is_running() || !held_notes.outer_pair(&lowest, &highest)) {
+		second_note = NO_SECOND_NOTE;
+		return;
+	}
+
+	if (second_note == NO_SECOND_NOTE) {
+		/* With GLIDE on, the saw glides into its note from where it was. */
+		second_note_frequency = osc_saw_frequency;
+	}
+
+	*pulse_note = lowest + transpose;
+	second_note = highest + transpose;
+}
+
 void note_on(uint8_t midi_note, uint8_t velocity, bool enabled)
 {
 	/* The ACCENT button forces full velocity. */
@@ -213,12 +279,19 @@ void note_on(uint8_t midi_note, uint8_t velocity, bool enabled)
 	note_is_playing = midi_note;
 
 	if (enabled) {
+		uint8_t pulse_note = midi_note;
+
+		pick_duophonic_notes(&pulse_note);
+
 		/* Velocity sets how far the filter envelope opens the filter. */
 		duo::voice.set_filter_env_amount(velocity / 127.0f);
-		osc_pulse_midi_note = midi_note;
-		osc_pulse_target_frequency = (int)midi_note_to_frequency(midi_note);
-		duo::voice.set_saw_frequency(detune(osc_pulse_midi_note, detune_amount));
+		osc_pulse_midi_note = pulse_note;
+		osc_pulse_target_frequency = (int)midi_note_to_frequency(pulse_note);
+		duo::voice.set_saw_frequency(second_note != NO_SECOND_NOTE
+						     ? second_note_saw_frequency()
+						     : detune(osc_pulse_midi_note, detune_amount));
 
+		/* MIDI out stays monophonic: the note just played, as before. */
 		MIDI::sendNoteOn(midi_note, velocity, MIDI_CHANNEL);
 		duo::voice.note_on();
 	} else {
@@ -314,6 +387,8 @@ static void process_key(const Button k, const KeyState state)
 				pick_drum_sound(k - KEYB_0);
 			} else {
 				key_note[k - KEYB_0] = SCALE[k - KEYB_0];
+				/* Before the sequencer, whose note_on() looks at it. */
+				held_notes.press(key_note[k - KEYB_0]);
 				keyboard_set_note(key_note[k - KEYB_0]);
 			}
 		} else if (k <= STEP_8 && k >= STEP_1) {
@@ -326,10 +401,15 @@ static void process_key(const Button k, const KeyState state)
 				leds(step) = CRGB::Black;
 			}
 		} else if (k == BTN_SEQ2) {
-			if (!sequencer.is_running()) {
-				sequencer.advance();
+			if (in_setup) {
+				/* Held at power-on, double speed turns duophonic mode on. */
+				duophonic = true;
+			} else {
+				if (!sequencer.is_running()) {
+					sequencer.advance();
+				}
+				double_speed = true;
 			}
-			double_speed = true;
 		} else if (k == BTN_DOWN) {
 			transpose--;
 			if (transpose < -12) {
@@ -372,6 +452,7 @@ static void process_key(const Button k, const KeyState state)
 	case RELEASED:
 		if (k <= KEYB_9 && k >= KEYB_0) {
 			if (key_note[k - KEYB_0] != NO_NOTE) {
+				held_notes.release(key_note[k - KEYB_0]);
 				keyboard_unset_note(key_note[k - KEYB_0]);
 				key_note[k - KEYB_0] = NO_NOTE;
 			}

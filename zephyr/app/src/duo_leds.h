@@ -70,9 +70,14 @@ static void led_init()
 	/* The key of the current MIDI channel lights up... */
 	physical_leds[MIDI_CHANNEL + 8] = COLORS[SCALE[MIDI_CHANNEL - 1] % 24];
 
-	/* ...and so does the step button of the scale, if one was picked. */
+	/* ...and so does the step button of the scale, if one was picked... */
 	if (duo::current_scale_index() != duo::DEFAULT_SCALE) {
 		leds(duo::current_scale_index()) = LED_WHITE;
+	}
+
+	/* ...and the play button turns purple in duophonic mode. */
+	if (duophonic) {
+		led_play = CRGB(0x8800ff);
 	}
 
 	FastLED.show();
