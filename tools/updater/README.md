@@ -21,6 +21,8 @@ Both legacy firmware images and Zephyr builds (`duo_firmware.bin`, or `zephyr.bi
 
 `uv run firmware_info.py` prints what the connected DUO reports about its firmware and board revision.
 
+`uv run audio_load.py` prints how much of the CPU the Zephyr firmware spends rendering audio (mean and worst time per block against the block's length) and how many times the audio output has run dry since start-up. The legacy firmware does not report this.
+
 # How an update stays safe
 Before anything is sent to the DUO, the file is checked the way the boot ROM will check it: FlexSPI configuration block, image vector table, boot data and vector table, and that it fits (`duo_image.py`, which the Zephyr build also runs on every image). A file that would not boot — an `.elf` or `.hex` instead of the `.bin`, a truncated download, an image linked for another address — is refused. If the image names a different board revision than the DUO reports, the updater asks first.
 
