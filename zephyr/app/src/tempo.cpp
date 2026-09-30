@@ -2,47 +2,28 @@
  * Copyright (c) 2025 Dato Musical Instruments
  * SPDX-License-Identifier: Apache-2.0
  *
- * Internal clock generator, ported unchanged from brains2/apps/duo/tempo.cpp.
+ * Internal clock generator, from brains2/apps/duo/tempo.cpp.
+ *
+ * The tempo mapping and the accumulator design are the original's. What differs
+ * is the timebase: the accumulator counts microseconds, and the legacy code fed
+ * it from millis(), so every tick landed on a millisecond boundary - 0.83 ms of
+ * jitter at 120 BPM, exported on the MIDI clock and the sync jack. It now reads
+ * micros() directly. The arithmetic itself lives in tempo_clock.cpp so that it
+ * can be tested without the MIDI and sync machinery TempoHandler pulls in.
  */
 
 #include "compat/duo_compat.h"
 #include "compat/lib/tempo.h"
 
-#define BPM_TO_MILLIS(bpm) (2500000 / bpm)
-
 #include "shared/duo/TempoHandler.h"
 
 void Tempo::update_internal(TempoHandler &handler, const int potvalue)
 {
-	uint32_t scaled_millis_per_beat; /* 2 x beats per minute */
+	const uint32_t period_us = tempo_period_from_pot(potvalue);
 
-	if (potvalue < 128) {
-		scaled_millis_per_beat =
-			map(potvalue, 0, 128, BPM_TO_MILLIS(30), BPM_TO_MILLIS(60));
-	} else if (potvalue < 895) {
-		scaled_millis_per_beat =
-			map(potvalue, 128, 895, BPM_TO_MILLIS(60), BPM_TO_MILLIS(200));
-	} else {
-		/* For Toon: 603 BPM in gives 600 BPM out */
-		scaled_millis_per_beat =
-			map(potvalue, 895, 1023, BPM_TO_MILLIS(200), BPM_TO_MILLIS(603));
-	}
+	uint32_t ticks = tempo_advance(accum, last_micros, micros(), period_us);
 
-	const uint32_t cur = millis();
-
-	/*
-	 * Multiply by 100 as a scaling factor for millis_per_beat and a factor
-	 * of 10 to match the original Duo. Check if last_millis overflowed
-	 * since last time.
-	 */
-	if (cur >= last_millis) {
-		accum += (cur - last_millis) * 1000;
-	}
-
-	last_millis = cur;
-
-	while (accum >= scaled_millis_per_beat) {
-		accum -= scaled_millis_per_beat;
+	while (ticks--) {
 		handler._previous_clock_time = micros();
 		handler.trigger();
 	}
@@ -51,5 +32,5 @@ void Tempo::update_internal(TempoHandler &handler, const int potvalue)
 void Tempo::reset()
 {
 	accum = 0;
-	last_millis = millis();
+	last_micros = micros();
 }

@@ -29,6 +29,14 @@ static const int SK6805_BRIGHTNESS = 140;
 #define CORRECTION_SK6812 0xFFF1E0
 #define CORRECTION_SK6805 0xFFD3E0
 
+/*
+ * The white balance the legacy firmware actually applies. Its led_init()
+ * asks for CORRECTION_SK6812, but the legacy FastLED adapter's
+ * setCorrection() is a stub, and its LED driver scales every frame by this
+ * fixed value instead (brains2/core/lib/leds.h).
+ */
+#define CORRECTION_LEGACY 0xFFD0D0
+
 /* The black keys have assigned colours; the white keys are shown in grey. */
 static const CRGB COLORS[] = {
 	0x444444, 0xFF0001, 0x444444, 0xFFDD00, 0x444444, 0x444444,
@@ -42,7 +50,7 @@ static void led_init()
 	FastLED.addLeds<0, 0, 0>(physical_leds, NUM_LEDS);
 
 	FastLED.setBrightness(SK6805_BRIGHTNESS);
-	FastLED.setCorrection(CORRECTION_SK6812);
+	FastLED.setCorrection(CORRECTION_LEGACY);
 
 	FastLED.clear();
 	physical_leds[NUM_LEDS - 1] = CRGB(0xff6805);
@@ -55,7 +63,17 @@ static void led_init()
 	 * The 400 ms of delay in this startup animation is deliberate: it also
 	 * prevents an audible pop as the amplifier comes up.
 	 */
+#ifdef CONFIG_DUO_DEV_MODE
+	physical_leds[0] = CRGB::Blue;
+#endif
+
+	/* The key of the current MIDI channel lights up... */
 	physical_leds[MIDI_CHANNEL + 8] = COLORS[SCALE[MIDI_CHANNEL - 1] % 24];
+
+	/* ...and so does the step button of the scale, if one was picked. */
+	if (duo::current_scale_index() != duo::DEFAULT_SCALE) {
+		leds(duo::current_scale_index()) = LED_WHITE;
+	}
 
 	FastLED.show();
 	delay(100);

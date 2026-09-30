@@ -81,7 +81,8 @@ static void sequencer_align_clock() {
 static void sequencer_init() {
   last_sequencer_update = micros();
   for (int i = 0; i < Sequencer::NUM_STEPS; i++) {
-    sequencer.set_step_note(i, SCALE[random(9)]);
+    // random(n) is exclusive of n, and SCALE has 10 entries.
+    sequencer.set_step_note(i, SCALE[random(10)]);
   }
 
   tempo_handler.setHandleTempoEvent(sequencer_tick_clock);

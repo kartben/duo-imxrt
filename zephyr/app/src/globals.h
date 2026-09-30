@@ -9,15 +9,19 @@
 #pragma once
 
 #include "compat/duo_compat.h"
+#include "scales.h"
 
 #define VERSION "1.2.0-beta1"
 static const uint8_t FIRMWARE_VERSION[] = {1, 2, 0};
 
 int MIDI_CHANNEL = 1;
 
-/* Musical settings */
-static const uint8_t SCALE[] = {49, 51, 54, 56, 58, 61, 63, 66, 68, 70};
-static const uint8_t SCALE_OFFSET_FROM_C3[]{1, 3, 6, 8, 10, 13, 15, 18, 20, 22};
+/*
+ * Musical settings. SCALE[key] is the note under each of the ten keys; the
+ * legacy firmware's fixed pentatonic {49, 51, 54, ..., 70} is now the default
+ * of several scales (see scales.h).
+ */
+static const duo::ScaleKeys SCALE;
 
 #define HIGH_SAMPLE_RATE 44100.0f
 #define LOW_SAMPLE_RATE 2489.0f

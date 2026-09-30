@@ -11,6 +11,7 @@
 
 #include <zephyr/ztest.h>
 
+#include <cmath>
 #include <cstdlib>
 
 #define FRAMES 128
@@ -212,6 +213,77 @@ ZTEST(duo_voice, test_no_repeat_when_delay_is_off)
 	render_ms(voice, 100);
 
 	zassert_equal(render_ms(voice, 300), 0, "no delay means no repeat");
+}
+
+/*
+ * The pulse oscillator's duty cycle shows up as a DC offset, and the filter
+ * passes DC at unity gain, so at the panel's widest pulse width it would eat
+ * about 14% of the output range for something inaudible.
+ */
+ZTEST(duo_voice, test_output_is_dc_free_at_maximum_pulse_width)
+{
+	duo::Voice voice;
+	int16_t block[FRAMES * 2];
+	long sum = 0;
+	int counted = 0;
+
+	voice.init();
+	voice.set_pulse_width(0.95f);
+	voice.set_amp_release(500.0f);
+	voice.note_on();
+
+	/* Skip the first blocks so the pop suppressor has faded in. */
+	for (int b = 0; b < 40; b++) {
+		voice.render(block, FRAMES);
+
+		if (b < 10) {
+			continue;
+		}
+
+		for (int i = 0; i < FRAMES * 2; i++) {
+			sum += block[i];
+			counted++;
+		}
+	}
+
+	const float mean = (float)sum / (float)counted;
+
+	zassert_true(fabsf(mean) < 200.0f, "output carries %f of DC at full scale 32767",
+		     (double)mean);
+}
+
+/*
+ * The amp envelope gates whatever the oscillators produce, so any DC riding on
+ * them becomes a step at note on and another at note off - a thump rather than
+ * a note. This is the reason the offset is removed at the oscillator instead of
+ * with a DC blocker further down.
+ */
+ZTEST(duo_voice, test_note_on_does_not_step_the_output)
+{
+	duo::Voice voice;
+	int16_t block[FRAMES * 2];
+
+	voice.init();
+	voice.set_pulse_width(0.95f);
+
+	/* Settle, with no note held: the output should be sitting at silence. */
+	for (int b = 0; b < 20; b++) {
+		voice.render(block, FRAMES);
+	}
+
+	zassert_equal(render_block(voice), 0, "an idle voice should be silent");
+
+	voice.note_on();
+	voice.render(block, FRAMES);
+
+	/*
+	 * The amp envelope attack is 2 ms, so the first few samples should rise
+	 * from zero rather than jumping. A DC step would appear immediately.
+	 */
+	for (int i = 0; i < 8; i++) {
+		zassert_true(abs((int)block[i]) < 400, "sample %d jumped to %d at note on", i,
+			     block[i]);
+	}
 }
 
 /*

@@ -235,8 +235,8 @@ zephyr_udc0: &usb1 {
 };
 
 /*
- * 16 Mbit Winbond QSPI NOR the SoC boots from (execute in place). The
- * configuration mirrors brains2/sdk/xip/duobrains2_flexspi_nor_config.c.
+ * 128 Mbit (16 MiB) Winbond QSPI NOR the SoC boots from (execute in place).
+ * The configuration mirrors brains2/sdk/xip/duobrains2_flexspi_nor_config.c.
  */
 &flexspi {
 	status = "okay";
@@ -275,7 +275,12 @@ zephyr_udc0: &usb1 {
 					reg = <0x00000000 (DT_SIZE_M(15) + DT_SIZE_K(960))>;
 				};
 
-				/* Persists the MIDI channel across power cycles. */
+				/*
+				 * Reserved for settings that should survive a power
+				 * cycle. Nothing writes to it yet: the firmware does not
+				 * write to flash at all, so it cannot damage its own
+				 * image.
+				 */
 				storage_partition: partition@ff0000 {
 					compatible = "zephyr,mapped-partition";
 					label = "storage";

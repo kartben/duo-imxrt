@@ -24,6 +24,35 @@ enum Button : uint8_t {
 	NO_KEY,
 };
 
+/* Matrix wiring of the Brains 2 panel (SEQ_1_2 layout), indexed [row][col]. */
+static constexpr uint8_t KEY_ROWS = 4;
+static constexpr uint8_t KEY_COLS = 6;
+
+static constexpr Button KEYMAP[KEY_ROWS][KEY_COLS] = {
+	{ BTN_SEQ1,  STEP_8,    STEP_1, BTN_SEQ2, STEP_7, STEP_6 },
+	{ DUMMY_KEY, SEQ_START, STEP_2, STEP_3,   STEP_4, STEP_5 },
+	{ KEYB_0,    BTN_DOWN,  KEYB_2, KEYB_1,   KEYB_4, KEYB_3 },
+	{ KEYB_6,    KEYB_5,    KEYB_8, KEYB_7,   BTN_UP, KEYB_9 },
+};
+
+struct KeyPosition {
+	uint8_t row;
+	uint8_t col;
+};
+
+static constexpr KeyPosition key_position(Button key)
+{
+	for (uint8_t r = 0; r < KEY_ROWS; r++) {
+		for (uint8_t c = 0; c < KEY_COLS; c++) {
+			if (KEYMAP[r][c] == key) {
+				return KeyPosition{r, c};
+			}
+		}
+	}
+
+	return KeyPosition{KEY_ROWS, KEY_COLS};
+}
+
 /* Key lifecycle, matching the Keypad library's state machine. */
 enum KeyState : uint8_t {
 	IDLE,

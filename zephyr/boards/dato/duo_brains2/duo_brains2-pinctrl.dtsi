@@ -39,12 +39,17 @@
 	 * The three analog multiplexer I/O pins. All eight pots and all the
 	 * momentary switches / drum pads hang off 4051-style muxes, so the
 	 * whole panel is read through just these three pads.
+	 *
+	 * The pull/keeper is off, as the legacy firmware's INPUT_DISABLE mode
+	 * leaves it: a keeper on an analog input pulls every reading towards
+	 * the last logic level it latched.
 	 */
 	pinmux_adc1: pinmux_adc1 {
 		group0 {
 			pinmux = <&iomuxc_gpio_ad_14_adc1_in14>, /* SYN mux  */
 				 <&iomuxc_gpio_ad_03_adc1_in3>,  /* SYN mux2 */
 				 <&iomuxc_gpio_ad_02_adc1_in2>;  /* BRN mux  */
+			bias-disable;
 			drive-strength = "r0-4";
 			slew-rate = "slow";
 			nxp,speed = "100-mhz";

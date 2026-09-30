@@ -9,7 +9,9 @@
 #include "power.h"
 
 #include <soc.h>
+#include <zephyr/fatal.h>
 #include <zephyr/kernel.h>
+#include <zephyr/logging/log_ctrl.h>
 #include <zephyr/sys/reboot.h>
 
 /*
@@ -56,3 +58,20 @@ void power_read_device_id(uint32_t *high, uint32_t *low)
 	*high = OCOTP->CFG0;
 	*low = OCOTP->CFG1;
 }
+
+#ifdef CONFIG_DUO_REBOOT_ON_FATAL_ERROR
+/*
+ * Replaces the kernel's default, which halts. A DUO that has faulted reboots
+ * and comes back up playable, and one that faults on every boot can still be
+ * put into the serial downloader with the power-on recovery keys.
+ */
+extern "C" void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
+{
+	ARG_UNUSED(reason);
+	ARG_UNUSED(esf);
+
+	LOG_PANIC();
+	sys_reboot(SYS_REBOOT_COLD);
+	CODE_UNREACHABLE;
+}
+#endif

@@ -2,5 +2,14 @@ board:
   name: duo_brains2
   full_name: Dato DUO Brains 2
   vendor: dato
+  # 2.1 and 2.3 differ only in the speaker amplifier's shutdown line, which on
+  # 2.3 is strapped to the level that mutes whichever amplifier is fitted; see
+  # duo_brains2_2_3_0.overlay. Build for 2.3 with -b duo_brains2@2.3.0.
+  revision:
+    format: major.minor.patch
+    default: "2.1.0"
+    revisions:
+      - name: "2.1.0"
+      - name: "2.3.0"
   socs:
     - name: mimxrt1011
