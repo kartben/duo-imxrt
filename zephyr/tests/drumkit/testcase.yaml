@@ -1,0 +1,9 @@
+common:
+  tags:
+    - duo
+    - drumkit
+tests:
+  duo.drumkit:
+    # Checks generated data only, so it runs on the host.
+    integration_platforms:
+      - native_sim/native/64

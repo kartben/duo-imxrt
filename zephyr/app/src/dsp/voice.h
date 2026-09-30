@@ -131,6 +131,21 @@ public:
 	void hat_note_on(uint8_t velocity);
 	void hat_note_off();
 
+	/*
+	 * Sampled drums. A sample given to a pad plays instead of its
+	 * synthesised drum from the next hit on; nullptr brings the synthesised
+	 * drum back.
+	 */
+	void set_kick_sample(const int16_t *data, uint32_t length)
+	{
+		kick_sample.set_sample(data, length);
+	}
+
+	void set_hat_sample(const int16_t *data, uint32_t length)
+	{
+		hat_sample.set_sample(data, length);
+	}
+
 private:
 	dsp::Oscillator osc_saw;
 	dsp::Oscillator osc_pulse;
@@ -156,6 +171,9 @@ private:
 	dsp::SimpleDrum hat_snappy;
 	float hat_noise_gain = 0.5f;
 	float hat_snappy_gain = 0.5f;
+
+	dsp::SamplePlayer kick_sample;
+	dsp::SamplePlayer hat_sample;
 
 	dsp::Fade pop_suppressor;
 	dsp::PeakDetector output_peak;

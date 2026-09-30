@@ -16,6 +16,7 @@
 
 #include "shared/duo/envelope.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 
@@ -603,6 +604,117 @@ public:
 private:
 	size_t write_pos = 0;
 	size_t delay_samples = Samples - 1;
+};
+
+/*
+ * One-shot sample playback, for the sampled drums. The samples are 16 bit and
+ * play at their own rate, straight out of memory - in the firmware, out of
+ * XIP flash, which keeps up easily (see the DSP load figures in the README).
+ *
+ * Hitting it again while the last hit still sounds starts the new hit at once
+ * and hands the old one to a second slot that fades it out over a couple of
+ * milliseconds, so the last hit is never cut off with a click.
+ *
+ * trigger() is called from the control loop and next() from the audio thread,
+ * which can preempt it at any point. A hit half written when that happens -
+ * the new sample's address with the old one's length, say - would play
+ * whatever follows the sample in flash. So trigger() only posts a request, and
+ * next() starts it: the hits being played are only ever changed by the audio
+ * thread.
+ */
+class SamplePlayer {
+public:
+	/* Takes effect from the next trigger(); a hit already sounding plays out. */
+	void set_sample(const int16_t *data, uint32_t length)
+	{
+		sample = data;
+		sample_length = data != nullptr ? length : 0;
+	}
+
+	bool has_sample() const
+	{
+		return sample_length > 0;
+	}
+
+	void trigger(float gain)
+	{
+		if (!has_sample()) {
+			return;
+		}
+
+		/*
+		 * Withdraw any request not yet started before rewriting it, so a
+		 * next() that runs part way through here finds nothing to start.
+		 */
+		pending.store(false, std::memory_order_relaxed);
+		std::atomic_signal_fence(std::memory_order_seq_cst);
+		request = Hit{sample, sample_length, 0, gain * (1.0f / 32768.0f)};
+		pending.store(true, std::memory_order_release);
+	}
+
+	float next()
+	{
+		if (pending.load(std::memory_order_acquire)) {
+			pending.store(false, std::memory_order_relaxed);
+			start(request);
+		}
+
+		float out = current.next();
+
+		if (fading.active()) {
+			out += fading.next() * fading_level;
+			fading_level -= FADE_STEP;
+			if (fading_level <= 0.0f) {
+				fading.stop();
+			}
+		}
+
+		return out;
+	}
+
+private:
+	static constexpr float DECLICK_MS = 2.0f;
+	static constexpr float FADE_STEP = 1000.0f / (DECLICK_MS * SAMPLE_RATE);
+
+	struct Hit {
+		const int16_t *data = nullptr;
+		uint32_t length = 0;
+		uint32_t pos = 0;
+		float gain = 0.0f;
+
+		bool active() const
+		{
+			return pos < length;
+		}
+
+		void stop()
+		{
+			pos = length;
+		}
+
+		float next()
+		{
+			return active() ? (float)data[pos++] * gain : 0.0f;
+		}
+	};
+
+	void start(const Hit &hit)
+	{
+		if (current.active()) {
+			fading = current;
+			fading_level = 1.0f;
+		}
+
+		current = hit;
+	}
+
+	const int16_t *sample = nullptr;
+	uint32_t sample_length = 0;
+	Hit request;
+	std::atomic<bool> pending{false};
+	Hit current;
+	Hit fading;
+	float fading_level = 0.0f;
 };
 
 /* Running peak detector, standing in for AudioAnalyzePeak. */

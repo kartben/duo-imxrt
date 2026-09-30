@@ -111,7 +111,8 @@ west twister -T duo-imxrt/zephyr/tests -p native_sim/native/64
 | `zephyr/tests/midi` | The MIDI 1.0 parser (running status, channel filtering, sysex framing and overflow, soft thru) and the UMP translation, including byte-for-byte round trips |
 | `zephyr/tests/scales` | The keyboard scales: the default is the legacy keyboard note for note, every scale stays playable at full transposition, and switching scales carries a pattern across and back |
 | `zephyr/tests/tempo` | The internal clock generator: the TEMPO pot mapping, and that ticks neither drift over a minute nor jitter further than one poll interval, survive the microsecond counter's 32-bit wrap, and catch up after a late poll |
-| `zephyr/tests/dsp` | Each DSP primitive against the behaviour the voice relies on, plus the assembled voice: silence when idle, sound on a note, decay after release, the delay repeating one tap time later, and no wrapping at extreme gain. Also pins the numerical shortcuts — the fast `sin`/`exp2` against libm, the drum decay against an exact exponential, filter stability across its whole cutoff and resonance range, and that the output carries no DC |
+| `zephyr/tests/dsp` | Each DSP primitive against the behaviour the voice relies on, plus the assembled voice: silence when idle, sound on a note, decay after release, the delay repeating one tap time later, and no wrapping at extreme gain. Also pins the numerical shortcuts — the fast `sin`/`exp2` against libm, the drum decay against an exact exponential, filter stability across its whole cutoff and resonance range, and that the output carries no DC. The sample player plays exactly what is stored, fades a retriggered hit out rather than cutting it off, and a sampled pad sounds instead of its synthesised drum and feeds the delay as it does |
+| `zephyr/tests/drumkit` | The sampled drum sounds, synthesised as for the firmware: every key but the first has one, none of them starts or ends on a click, clips or carries DC, and together they stay under a megabyte |
 
 The suites compile the firmware sources directly, so they break when the
 firmware does. The delay-line and envelope timings in particular are asserted
@@ -136,6 +137,7 @@ zephyr/boards/dato/duo_brains2  board definition for the Brains 2.1 hardware
 zephyr/dts/bindings             bindings for the DUO-specific hardware blocks
 zephyr/drivers/led_strip        WS2812 driver using FlexIO + eDMA
 zephyr/app                      the firmware
+zephyr/app/drumkit              drumkit.py, which synthesises the sampled drums
 tools/updater                   the updater, and duo_image.py, which checks images
 ```
 
@@ -147,6 +149,7 @@ Inside `zephyr/app/src`:
 | `globals.h`, `duo_synth.h`, `duo_drums.h`, `duo_leds.h`, `tempo.cpp` | Ports of the matching files under `brains2/apps/duo` |
 | `tempo_clock.cpp` | The clock generator's arithmetic, kept apart from `tempo.cpp` so it can be tested without the MIDI and sync transports |
 | `scales.cpp` | The keyboard scales |
+| `drum_kits.h` | The drum pads' sounds, generated from `../drumkit/drumkit.py` at build time |
 | `platform/recovery.cpp` | The power-on recovery keys (both arrows) into the serial downloader |
 | `compat/` | Arduino-flavoured helpers and MIDI type definitions that the shared code expects |
 | `platform/` | Panel inputs, key matrix, LEDs, MIDI transports, sync jacks, power |
@@ -188,6 +191,57 @@ the first, third and fifth keys' notes. Steps holding notes from outside the
 old scale — entered over MIDI — are left alone. The key LEDs keep their legacy
 colours: black-key notes have a colour each and the others show grey, so the
 keyboard also shows which notes a scale uses.
+
+## Drum sounds
+
+Each drum pad can play ten sounds, one per keyboard key. The first key's is the
+DUO's own synthesised drum, which is where both pads start, so the DUO sounds
+exactly as before until another is picked:
+
+| Key | Kick pad | Hat pad |
+| --- | --- | --- |
+| 1 | DUO kick (synthesised, the default) | DUO hi-hat (synthesised, the default) |
+| 2 | 808 kick | 808 closed hat |
+| 3 | 909 kick | 808 open hat |
+| 4 | Acoustic kick | 909 snare |
+| 5 | Lo-fi kick | 808 clap |
+| 6 | Electro zap | Rimshot |
+| 7 | Sub drop | Cowbell |
+| 8 | Low tom | Shaker |
+| 9 | High tom | Tambourine |
+| 10 | Conga | Clave |
+
+- **On the panel**, hold a pad and press a key: the pad takes that key's sound
+  and plays it straight away. Holding a pad for a moment also lights its
+  current sound's key white and dims the others; a plain hit is too short to
+  change the keys. While a pad is held the keys pick sounds rather than play
+  notes. Holding both pads sets both. Like the scale, the choice lasts until
+  the DUO is switched off.
+- **Over MIDI**, CC 14 and CC 15 on the DUO's channel pick the kick and hat
+  pads' sounds: values 0–12 the first key's, 13–25 the second's, and so on to
+  116–127 for the tenth. Both CCs are undefined in the MIDI specification and
+  the DUO never sends them.
+
+The pads play the samples as they play the synthesised drums: the touch
+segments set the velocity, which here sets the level; the kick pad still ducks
+the pulse oscillator; and with the delay on, the hat pad's sound is sent to it
+too. Samples are one-shots: they play to the end whatever the pad does, and a
+new hit fades the last one out over 2 ms rather than cutting it off.
+
+The samples are not recordings. `app/drumkit/drumkit.py` synthesises each one
+from oscillators, noise, filters and envelopes, modelled on the circuits of the
+drum machines they are named after, so they carry no third-party rights. The
+build runs it, using only the Python standard library, and links the result
+into the firmware: about 700 KB of 16 bit, 44.1 kHz audio that plays straight
+out of flash, and the reason the image is 800 KB rather than 100 KB. To listen
+to them without flashing:
+
+```
+python3 duo-imxrt/zephyr/app/drumkit/drumkit.py --wav drum-sounds
+```
+
+To change a sound, edit its function in `drumkit.py`, or replace it with any
+other generator that returns samples in -1 to 1.
 
 ## Board revisions
 
@@ -239,6 +293,22 @@ Four blocks of 128 stereo frames give about 12 ms of buffering, enough to absorb
 an LED refresh or a burst of MIDI. The 350 ms delay line is 31 KB and lives in
 DTCM.
 
+The thread times every block it renders, and `tools/updater/audio_load.py`
+reads the figures back over MIDI. On a Brains 2.3, measured with that and with
+one-off benchmarks of each block, in CPU cycles per stereo frame (a frame lasts
+about 11,300 cycles at 500 MHz):
+
+| What | Cycles per frame |
+| --- | --- |
+| The whole voice, drums idle | 900–1,000 (8–9% of the CPU) |
+| A synthesised kick or hi-hat, while it rings | about 500 more each, nearly all of it `sinf()` |
+| A second complete synth voice (both oscillators, filter, both envelopes, crusher) | about 470 |
+| A sampled drum streaming from flash, every cache line cold | about 60 |
+
+So a sampled drum costs about a tenth of a synthesised one, and there is room
+for much more. DTCM, which the delay line nearly fills, runs out well before
+the CPU does.
+
 ### Known differences
 
 - `blend()` in the legacy FastLED adapter returns its first argument unchanged,
@@ -270,7 +340,8 @@ DTCM.
 - In developer mode, holding play turns the play button blue and the DUO enters
   the serial downloader when it is released (the legacy firmware enters it as
   soon as the hold registers).
-- Scale selection (above) and the power-on recovery keys are new.
+- Scale selection, the sampled drum sounds (both above) and the power-on
+  recovery keys are new.
 - The pulse oscillator subtracts its own DC offset. A pulse of duty *d* has a
   mean of `2d - 1`, and since the DUO's pulse width runs to 0.95 and the filter
   passes DC at unity gain, the legacy firmware gates up to 0.14 of full scale of
