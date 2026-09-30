@@ -23,6 +23,8 @@
 #include <zephyr/drivers/i2s.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/spinlock.h>
+#include <zephyr/timing/timing.h>
 
 #if defined(CONFIG_FPU) && defined(CONFIG_ARMV7_M_ARMV8_M_FP)
 #include <cmsis_core.h>
@@ -56,6 +58,55 @@ static struct k_thread audio_thread;
 
 static volatile bool running;
 
+/*
+ * Render time, kept in CPU cycles from the cycle counter, so that the DSP
+ * headroom can be read back over sysex (audio_out_read_load()).
+ */
+static struct k_spinlock load_lock;
+static uint64_t render_cycles_sum;
+static uint32_t render_cycles_max;
+static uint32_t render_blocks;
+static uint32_t underruns;
+
+static void record_render_time(const uint64_t cycles)
+{
+	const k_spinlock_key_t key = k_spin_lock(&load_lock);
+
+	render_cycles_sum += cycles;
+	render_cycles_max = MAX(render_cycles_max, (uint32_t)cycles);
+	render_blocks++;
+
+	k_spin_unlock(&load_lock, key);
+}
+
+static void record_underrun(void)
+{
+	const k_spinlock_key_t key = k_spin_lock(&load_lock);
+
+	underruns++;
+
+	k_spin_unlock(&load_lock, key);
+}
+
+void audio_out_read_load(struct audio_load *load)
+{
+	const k_spinlock_key_t key = k_spin_lock(&load_lock);
+
+	load->render_avg_cycles = render_blocks ? (uint32_t)(render_cycles_sum / render_blocks) : 0;
+	load->render_max_cycles = render_cycles_max;
+	load->blocks = render_blocks;
+	load->underruns = underruns;
+
+	render_cycles_sum = 0;
+	render_cycles_max = 0;
+	render_blocks = 0;
+
+	k_spin_unlock(&load_lock, key);
+
+	load->cpu_mhz = timing_freq_get_mhz();
+	load->block_frames = BLOCK_FRAMES;
+}
+
 static int queue_block(void)
 {
 	void *block;
@@ -66,7 +117,13 @@ static int queue_block(void)
 		return ret;
 	}
 
+	timing_t start = timing_counter_get();
+
 	duo::voice.render((int16_t *)block, BLOCK_FRAMES);
+
+	timing_t end = timing_counter_get();
+
+	record_render_time(timing_cycles_get(&start, &end));
 
 	ret = i2s_write(i2s_dev, block, BLOCK_BYTES);
 	if (ret < 0) {
@@ -107,6 +164,7 @@ static void audio_thread_fn(void *a, void *b, void *c)
 		}
 
 		LOG_ERR("audio underrun (%d), restarting stream", ret);
+		record_underrun();
 
 		/*
 		 * Yield before retrying. This thread is cooperative, so a
@@ -159,6 +217,9 @@ int audio_out_start(void)
 		LOG_ERR("i2s_configure failed (%d)", ret);
 		return ret;
 	}
+
+	timing_init();
+	timing_start();
 
 	running = true;
 

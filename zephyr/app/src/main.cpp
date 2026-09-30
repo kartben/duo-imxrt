@@ -103,6 +103,55 @@ static void midi_handle_control_change(uint8_t channel, uint8_t number, uint8_t 
 	midi_handle_cc(channel, number, value);
 }
 
+/*
+ * Sysex commands only this port answers, under the DUO's own header
+ * (F0 7D 64 <command> F7). They start at 0x40, clear of the legacy commands,
+ * which run from 0x01 to 0x0C.
+ */
+static const uint8_t SYSEX_AUDIO_LOAD = 0x40;
+
+/*
+ * Replies F0 7D 64 40, then the CPU clock in MHz, the audio block size in
+ * frames, the mean and worst time to render a block in CPU cycles, the number
+ * of blocks those cover and the underruns since start-up, each as five 7-bit
+ * bytes, most significant first, then F7. Each reading starts a new window,
+ * so the figures cover the time since the previous one.
+ * tools/updater/audio_load.py reads it.
+ */
+static void midi_print_audio_load()
+{
+	struct audio_load load;
+
+	audio_out_read_load(&load);
+
+	const uint32_t values[] = {load.cpu_mhz,           load.block_frames,
+				   load.render_avg_cycles, load.render_max_cycles,
+				   load.blocks,            load.underruns};
+	uint8_t sysex[4 + 5 * ARRAY_SIZE(values) + 1] = {0xf0, SYSEX_DATO_ID, SYSEX_DUO_ID,
+							  SYSEX_AUDIO_LOAD};
+	uint8_t *p = &sysex[4];
+
+	for (const uint32_t value : values) {
+		for (int shift = 28; shift >= 0; shift -= 7) {
+			*p++ = (value >> shift) & 0x7f;
+		}
+	}
+	*p = 0xf7;
+
+	MIDI::sendSysEx(sizeof(sysex), sysex);
+}
+
+static void midi_handle_port_sysex(byte *data, unsigned length)
+{
+	if (length >= 4 && data[1] == SYSEX_DATO_ID && data[2] == SYSEX_DUO_ID &&
+	    data[3] == SYSEX_AUDIO_LOAD) {
+		midi_print_audio_load();
+		return;
+	}
+
+	midi_handle_sysex(data, length);
+}
+
 static void midi_init()
 {
 	MIDI::init(MIDI::Callbacks{.note_on = midi_note_on,
@@ -112,7 +161,7 @@ static void midi_init()
 				   .cont = sequencer_start_from_MIDI,
 				   .stop = sequencer_stop,
 				   .cc = midi_handle_control_change,
-				   .sysex = midi_handle_sysex});
+				   .sysex = midi_handle_port_sysex});
 }
 
 /* One more LED than the panel physically has, for the production loopback test. */
