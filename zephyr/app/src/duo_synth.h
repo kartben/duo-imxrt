@@ -52,14 +52,56 @@ static void audio_volume(int volume)
 	}
 }
 
+/*
+ * Duophonic mode's second note, which the saw oscillator plays in place of
+ * following the pulse oscillator at the DETUNE interval; NO_SECOND_NOTE the
+ * rest of the time. note_on() in main.cpp sets it.
+ */
+static const int NO_SECOND_NOTE = -1;
+static int second_note = NO_SECOND_NOTE;
+static float second_note_frequency;
+
+/*
+ * The saw normally sits well under the pulse (0.4 against its 0.5, in a mixer
+ * weighted 0.2 to 0.4). Playing a note of its own, it is brought up to about
+ * 3 dB below the pulse, so both notes carry.
+ */
+static const float DUOPHONIC_SAW_AMPLITUDE = 1.2f;
+
+/* The saw's frequency for the second note, gliding to it the way pitch_update() does. */
+static float second_note_saw_frequency()
+{
+	static uint32_t glide_time;
+
+	/* An octave down: synth_update() plays the pulse an octave down too. */
+	const float target = midi_note_to_frequency(second_note - 12);
+
+	if (synth.glide) {
+		if (millis() - glide_time > 10) {
+			second_note_frequency += (target - second_note_frequency) * 0.3f;
+			glide_time = millis();
+		}
+	} else {
+		second_note_frequency = target;
+	}
+
+	return second_note_frequency;
+}
+
 static void synth_update()
 {
 	float osc_saw_amplitude = 0.4f;
+	float saw_frequency = osc_saw_frequency;
 
 	if (synth.detune > 850) {
 		osc_saw_amplitude = map(synth.detune, 850, 1023, 400, 0) / 1000.0f;
 	} else if (synth.detune < 200) {
 		osc_saw_amplitude = map(synth.detune, 0, 200, 200, 400) / 1000.0f;
+	}
+
+	if (second_note != NO_SECOND_NOTE) {
+		saw_frequency = second_note_saw_frequency();
+		osc_saw_amplitude = DUOPHONIC_SAW_AMPLITUDE;
 	}
 
 	float bitcrusher_samplerate = HIGH_SAMPLE_RATE;
@@ -75,7 +117,7 @@ static void synth_update()
 		filter_resonance = 4.0f;
 	}
 
-	duo::voice.set_saw_frequency(osc_saw_frequency);
+	duo::voice.set_saw_frequency(saw_frequency);
 	duo::voice.set_saw_amplitude(osc_saw_amplitude);
 
 	duo::voice.set_pulse_frequency(osc_pulse_frequency / 2);
