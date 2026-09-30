@@ -249,13 +249,18 @@ DTCM.
   `AudioSynthSimpleDrum`'s behaviour rather than its exact implementation. The
   patch topology and all parameter mappings are identical, but the two firmwares
   will not be sample-for-sample identical.
-- USB MIDI is presented through the USB MIDI 2.0 class, which enumerates as a
-  MIDI 1.0 endpoint on hosts that do not speak MIDI 2.0. The VID, PID,
+- USB MIDI is presented through the USB MIDI 2.0 class. The VID, PID,
   `bcdDevice`, the string descriptors at the same indices (manufacturer,
   product, the serial number in the legacy `CFG0-CFG1` form, then git tag,
   branch, commit and board, which `tools/updater/firmware_info.py` reads) and
   the bus-powered 500 mA configuration match the legacy firmware, so a host
-  sees the same device.
+  recognises the same device. The port is named differently, though: a MIDI
+  2.0 host takes the names from UMP Stream discovery, which the firmware
+  answers with the labels in `app.overlay`, so Linux lists the port as
+  `Group 1 (Dato DUO MIDI)` where the legacy firmware's was `Dato DUO MIDI 1`.
+  Zephyr's class does not implement the MIDI 1.0 alternate setting that hosts
+  without MIDI 2.0 support fall back to — it declares no jacks — so on those
+  hosts the DUO has no MIDI port.
 - Sysex replies (firmware version, serial number, identity) go out on DIN
   framed once, `F0 … F7`. The legacy firmware passes the framed buffer to the
   Arduino library without saying so, which frames it again (`F0 F0 … F7 F7`).
