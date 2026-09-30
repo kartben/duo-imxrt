@@ -13,9 +13,14 @@
 
 #include "compat/lib/tempo.h"
 
-#include <zephyr/ztest.h>
-
+/*
+ * Ahead of ztest.h: glibc 2.43 names a field __unused, which Zephyr defines as
+ * an attribute, so a C library header included after Zephyr's fails on hosts
+ * that new.
+ */
 #include <cstdlib>
+
+#include <zephyr/ztest.h>
 
 /* Tick period in microseconds for a given BPM, at 24 pulses per quarter note. */
 static uint32_t period_for(int bpm)
