@@ -86,6 +86,8 @@ static void change_scale(uint8_t index)
 	}
 }
 
+#include "duo_drums.h"
+
 /*
  * CC 3, which the MIDI specification leaves undefined and the DUO does not
  * send, selects the scale: values 0-15 the first, 16-31 the second, and so on,
@@ -93,11 +95,28 @@ static void change_scale(uint8_t index)
  */
 static const uint8_t SCALE_SELECT_CC = 3;
 
+/*
+ * CC 14 and 15, likewise undefined and never sent, pick the kick and hat pads'
+ * sounds the way holding a pad and pressing a key does: values 0-12 the first
+ * key's sound, 13-25 the second's, and so on up to the tenth.
+ */
+static const uint8_t KICK_SOUND_CC = 14;
+static const uint8_t HAT_SOUND_CC = 15;
+
 static void midi_handle_control_change(uint8_t channel, uint8_t number, uint8_t value)
 {
-	if (channel == MIDI_CHANNEL && number == SCALE_SELECT_CC) {
-		change_scale(value / (128 / duo::SCALE_COUNT));
-		return;
+	if (channel == MIDI_CHANNEL) {
+		switch (number) {
+		case SCALE_SELECT_CC:
+			change_scale(value / (128 / duo::SCALE_COUNT));
+			return;
+		case KICK_SOUND_CC:
+			Drums::select_kick_sound(value * duo::PAD_SOUNDS / 128);
+			return;
+		case HAT_SOUND_CC:
+			Drums::select_hat_sound(value * duo::PAD_SOUNDS / 128);
+			return;
+		}
 	}
 
 	midi_handle_cc(channel, number, value);
@@ -172,7 +191,6 @@ static const int led_order[NUM_LEDS] = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10,
 #include "duo_leds.h"
 #include "shared/duo/Pitch.h"
 
-#include "duo_drums.h"
 #include "duo_synth.h"
 
 static uint8_t note_is_playing = 0;
@@ -264,6 +282,26 @@ bool is_power_on()
 	return power_flag;
 }
 
+/*
+ * Holding a drum pad turns the keyboard into a choice of sounds for that pad,
+ * one per key. The new sound plays straight away, so it can be heard while
+ * the pad is still held.
+ */
+static const uint8_t DRUM_AUDITION_VELOCITY = 95;
+
+static void pick_drum_sound(uint8_t key)
+{
+	if (Drums::kick_pad_held()) {
+		Drums::select_kick_sound(key);
+		duo::voice.kick_note_on(DRUM_AUDITION_VELOCITY);
+	}
+
+	if (Drums::hat_pad_held()) {
+		Drums::select_hat_sound(key);
+		duo::voice.hat_note_on(DRUM_AUDITION_VELOCITY);
+	}
+}
+
 static void process_key(const Button k, const KeyState state)
 {
 	switch (state) {
@@ -271,6 +309,9 @@ static void process_key(const Button k, const KeyState state)
 		if (k <= KEYB_9 && k >= KEYB_0) {
 			if (in_setup) {
 				midi_set_channel((k - KEYB_0) + 1);
+			} else if (Drums::kick_pad_held() || Drums::hat_pad_held()) {
+				/* The key picks a sound and holds no note to release. */
+				pick_drum_sound(k - KEYB_0);
 			} else {
 				key_note[k - KEYB_0] = SCALE[k - KEYB_0];
 				keyboard_set_note(key_note[k - KEYB_0]);

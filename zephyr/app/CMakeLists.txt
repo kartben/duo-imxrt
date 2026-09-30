@@ -38,6 +38,10 @@ target_sources(app PRIVATE
   ${CMAKE_CURRENT_LIST_DIR}/../drivers/led_strip/ws2812_flexio_imxrt.c
 )
 
+# Sampled drums, synthesised at build time; see drumkit/drumkit.py.
+include(drumkit/drumkit.cmake)
+duo_drumkit_sources(app)
+
 target_include_directories(app PRIVATE
   src
   src/compat

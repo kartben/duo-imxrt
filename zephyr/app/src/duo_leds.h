@@ -109,12 +109,38 @@ static void led_deinit()
 	FastLED.show();
 }
 
+/*
+ * Once a drum pad has been held for a moment, the keys show which sound it
+ * plays: that key lights white and the others dim. A hit is shorter than the
+ * wait, so playing the pads does not flash the keyboard.
+ */
+static const unsigned long DRUM_SOUND_DISPLAY_MS = 300;
+
+static void show_drum_sound()
+{
+	int sound;
+
+	if (Drums::kick_pad_held_ms() > DRUM_SOUND_DISPLAY_MS) {
+		sound = Drums::kick_sound_index();
+	} else if (Drums::hat_pad_held_ms() > DRUM_SOUND_DISPLAY_MS) {
+		sound = Drums::hat_sound_index();
+	} else {
+		return;
+	}
+
+	for (int i = 0; i < 10; i++) {
+		physical_leds[i + 9] = i == sound ? LED_WHITE : CRGB(0x111111);
+	}
+}
+
 /* Repaints the panel from the sequencer state. */
 static void led_update()
 {
 	for (uint16_t i = 0; i < 10; i++) {
 		physical_leds[i + 9] = COLORS[SCALE[i] % 24];
 	}
+
+	show_drum_sound();
 
 	for (int l = 0; l < Sequencer::NUM_STEPS; l++) {
 		if (sequencer.get_step_enabled(l)) {

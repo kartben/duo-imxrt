@@ -310,3 +310,83 @@ ZTEST(duo_voice, test_init_clears_the_delay_line)
 	zassert_equal(render_ms(voice, 400), 0,
 		      "a re-initialised voice must not replay the previous session");
 }
+
+/* A 200 Hz tone standing in for a sampled drum. */
+static const int16_t *test_tone(size_t *length)
+{
+	static int16_t tone[4410];
+
+	for (size_t i = 0; i < ARRAY_SIZE(tone); i++) {
+		tone[i] = (int16_t)(20000.0f * sinf(2.0f * 3.14159265f * 200.0f * i / 44100.0f));
+	}
+
+	*length = ARRAY_SIZE(tone);
+	return tone;
+}
+
+ZTEST(duo_voice, test_a_pad_sample_plays_instead_of_the_synthesised_drum)
+{
+	static const int16_t silence[4410] = {};
+	size_t tone_length;
+	const int16_t *tone = test_tone(&tone_length);
+
+	/*
+	 * A silent sample on each pad: if the synthesised drum still sounded
+	 * alongside it, this would not be silent.
+	 */
+	duo::Voice voice;
+
+	voice.init();
+	voice.set_kick_sample(silence, ARRAY_SIZE(silence));
+	voice.set_hat_sample(silence, ARRAY_SIZE(silence));
+	voice.kick_note_on(127);
+	voice.hat_note_on(127);
+	zassert_equal(render_blocks(voice, 20), 0, "a sampled pad must not also play the synth");
+
+	/* A real sample is heard, at every velocity the pads report. */
+	static const uint8_t pad_velocities[] = {0, 31, 63, 95, 127};
+
+	for (const uint8_t velocity : pad_velocities) {
+		duo::Voice sampled;
+
+		sampled.init();
+		sampled.set_kick_sample(tone, tone_length);
+		sampled.kick_note_on(velocity);
+		zassert_true(render_blocks(sampled, 8) > 1000,
+			     "the kick pad sample should be heard at velocity %u", velocity);
+
+		duo::Voice sampled_hat;
+
+		sampled_hat.init();
+		sampled_hat.set_hat_sample(tone, tone_length);
+		sampled_hat.hat_note_on(velocity);
+		zassert_true(render_blocks(sampled_hat, 8) > 1000,
+			     "the hat pad sample should be heard at velocity %u", velocity);
+	}
+
+	/* Taking the sample away brings the synthesised drum back. */
+	duo::Voice restored;
+
+	restored.init();
+	restored.set_kick_sample(silence, ARRAY_SIZE(silence));
+	restored.set_kick_sample(nullptr, 0);
+	restored.kick_note_on(100);
+	zassert_true(render_blocks(restored, 8) > 100, "the synthesised kick should be back");
+}
+
+ZTEST(duo_voice, test_a_sampled_hat_feeds_the_delay)
+{
+	size_t tone_length;
+	const int16_t *tone = test_tone(&tone_length);
+	duo::Voice voice;
+
+	/* The synthesised hat is sent to the delay; a sample in its place must be too. */
+	voice.init();
+	voice.set_delay_enabled(true);
+	voice.set_hat_sample(tone, tone_length);
+	voice.hat_note_on(127);
+
+	/* The 100 ms tone, then a gap until the 350 ms tap brings it back. */
+	render_ms(voice, 200);
+	zassert_true(render_ms(voice, 300) > 100, "the hat sample should repeat in the delay");
+}

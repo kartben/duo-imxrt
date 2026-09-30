@@ -857,3 +857,113 @@ ZTEST(dsp_primitives, test_white_noise_seed)
 
 	zassert_true(nonzero, "a zero seed must not stall the generator");
 }
+
+/* --- Sample player ----------------------------------------------------- */
+
+ZTEST(dsp_primitives, test_sample_player_plays_the_sample_then_stops)
+{
+	static const int16_t data[] = {0, 1000, -2000, 3000, -32768, 32767, 5};
+	dsp::SamplePlayer player;
+
+	player.set_sample(data, ARRAY_SIZE(data));
+	zassert_equal(player.next(), 0.0f, "nothing should play before a hit");
+
+	player.trigger(0.5f);
+
+	for (size_t i = 0; i < ARRAY_SIZE(data); i++) {
+		/* zassert_within() evaluates its argument twice; next() must run once. */
+		const float out = player.next();
+
+		zassert_within(out, 0.5f * data[i] / 32768.0f, 1e-6f,
+			       "sample %u should play as stored, scaled by the gain", i);
+	}
+
+	for (int i = 0; i < 100; i++) {
+		zassert_equal(player.next(), 0.0f, "the hit should end with the sample");
+	}
+}
+
+ZTEST(dsp_primitives, test_sample_player_without_a_sample_is_silent)
+{
+	dsp::SamplePlayer player;
+
+	player.set_sample(nullptr, 1000);
+	zassert_false(player.has_sample(), "no data means no sample, whatever the length");
+
+	player.trigger(1.0f);
+
+	for (int i = 0; i < 100; i++) {
+		zassert_equal(player.next(), 0.0f, "a hit without a sample should be silent");
+	}
+}
+
+ZTEST(dsp_primitives, test_sample_player_retrigger_fades_the_last_hit)
+{
+	static int16_t steady[4000];
+	static const int16_t silence[4000] = {};
+	dsp::SamplePlayer player;
+
+	for (int16_t &s : steady) {
+		s = 16384;
+	}
+
+	player.set_sample(steady, ARRAY_SIZE(steady));
+	player.trigger(1.0f);
+
+	for (int i = 0; i < 100; i++) {
+		player.next();
+	}
+
+	/*
+	 * Retrigger onto a silent sample, so that what is heard is the first hit
+	 * alone: it must die away over the declick fade, not stop dead.
+	 */
+	player.set_sample(silence, ARRAY_SIZE(silence));
+	player.trigger(1.0f);
+
+	float previous = 0.5f;
+	int fade_samples = 0;
+
+	for (int i = 0; i < 1000; i++) {
+		const float out = player.next();
+
+		zassert_true(out <= previous + 1e-6f, "the old hit must only fade, at sample %d", i);
+		zassert_true(previous - out < 0.02f, "the fade must not jump, at sample %d", i);
+		if (out > 0.0f) {
+			fade_samples++;
+		}
+		previous = out;
+	}
+
+	zassert_within(fade_samples, samples_ms(2.0f), 2, "the fade should take about 2 ms, took %d",
+		       fade_samples);
+	zassert_equal(previous, 0.0f, "the old hit should be gone after the fade");
+}
+
+ZTEST(dsp_primitives, test_sample_player_new_sample_waits_for_the_next_hit)
+{
+	static const int16_t first[] = {1000, 1000, 1000, 1000};
+	static const int16_t second[] = {-2000, -2000};
+	dsp::SamplePlayer player;
+
+	player.set_sample(first, ARRAY_SIZE(first));
+	player.trigger(1.0f);
+
+	float out = player.next();
+
+	zassert_within(out, 1000 / 32768.0f, 1e-6f, "the first sample should play");
+
+	/* Changing the sample must not cut into the hit already sounding. */
+	player.set_sample(second, ARRAY_SIZE(second));
+
+	for (int i = 1; i < 4; i++) {
+		out = player.next();
+		zassert_within(out, 1000 / 32768.0f, 1e-6f,
+			       "the first hit should play out, at sample %d", i);
+	}
+	zassert_equal(player.next(), 0.0f, "the first hit should end on its own");
+
+	player.trigger(1.0f);
+	out = player.next();
+	zassert_within(out, -2000 / 32768.0f, 1e-6f, "the next hit plays the new sample");
+}

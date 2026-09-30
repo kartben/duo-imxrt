@@ -139,11 +139,24 @@ void Voice::set_output_gains(float main, float delay_out, float kick_out, float 
 	hat_gain = hat_out;
 }
 
+/*
+ * A sampled drum's level for a pad velocity. The pads report five velocities
+ * from 0 to 127, and even the softest must still be heard.
+ */
+static float drum_sample_gain(uint8_t velocity)
+{
+	return 0.4f + 0.6f * (float)velocity / 127.0f;
+}
+
 void Voice::kick_note_on(uint8_t velocity)
 {
-	kick.set_length(200 - velocity);
-	kick.set_frequency((float)(velocity / 4 + 40));
-	kick.note_on();
+	if (kick_sample.has_sample()) {
+		kick_sample.trigger(drum_sample_gain(velocity));
+	} else {
+		kick.set_length(200 - velocity);
+		kick.set_frequency((float)(velocity / 4 + 40));
+		kick.note_on();
+	}
 
 	/* Sidechain: duck the pulse oscillator while the kick sounds. */
 	osc_pulse.set_amplitude(0.35f);
@@ -156,6 +169,11 @@ void Voice::kick_note_off()
 
 void Voice::hat_note_on(uint8_t velocity)
 {
+	if (hat_sample.has_sample()) {
+		hat_sample.trigger(drum_sample_gain(velocity));
+		return;
+	}
+
 	if (velocity > 63) {
 		hat_snappy.note_on();
 	}
@@ -195,13 +213,13 @@ void Voice::render(int16_t *out, size_t frames)
 		 */
 		output_peak.process(voiced);
 
-		/* --- drums --- */
-		const float kick_out = kick.next();
+		/* --- drums; a sampled drum sounds in place of the synthesised one --- */
+		const float kick_out = kick.next() + kick_sample.next();
 
 		hat_filter_hp.process(hat_noise.next() * hat_env.next());
 		hat_filter_bp.process(hat_filter_hp.high());
 		const float hat_out = hat_noise_gain * hat_filter_bp.band() +
-				      hat_snappy_gain * hat_snappy.next();
+				      hat_snappy_gain * hat_snappy.next() + hat_sample.next();
 
 		/* --- delay, with the hi-hat feeding its input as well --- */
 		const float delay_in = delay_in_gain * (crushed * delay_send_env.next()) +
